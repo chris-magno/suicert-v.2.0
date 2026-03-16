@@ -1,0 +1,45 @@
+{
+  "name": "suicert",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit",
+    "test:webhook": "node scripts/test-webhook.js",
+    "test:security": "node scripts/test-security-hardening.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.55.0",
+    "@mysten/dapp-kit": "^1.0.4",
+    "@mysten/sui": "^2.8.0",
+    "@mysten/wallet-standard": "^0.20.1",
+    "@supabase/supabase-js": "^2.49.8",
+    "@tailwindcss/postcss": "^4.2.1",
+    "@tanstack/react-query": "^5.90.21",
+    "ably": "^2.6.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.6.5",
+    "lucide-react": "^0.511.0",
+    "next": "^15.5.12",
+    "next-auth": "^5.0.0-beta.30",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.34.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.5.12",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.8.3"
+  }
+}

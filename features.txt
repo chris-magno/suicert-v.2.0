@@ -1,0 +1,3 @@
+I can add an explicit admin notification badge component (separate from pending count) so missing requests are more obvious.
+I can add API authorization on /api/issuers so only admin can fetch all issuers, while non-admin gets limited data.
+I can add a migration/check script to normalize wrongly auto-approved issuer applications.

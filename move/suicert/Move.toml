@@ -1,0 +1,14 @@
+[package]
+name = "suicert"
+version = "2026.1.0"
+edition = "2024.beta"
+authors = ["Chris Magno Javillonar"]
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+suicert = "0x0"
+
+[dev-addresses]
+suicert = "0x0"
