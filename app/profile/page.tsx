@@ -8,6 +8,7 @@ import CertificateDisplay from "@/components/certificates/CertificateDisplay";
 import type { Certificate, Issuer } from "@/types";
 import { useWalletSession } from "@/lib/wallet/context";
 import { useToast } from "@/components/ui/ToastProvider";
+import { signOut as clientSignOut } from "next-auth/react";
 
 interface ProfileData {
   authenticated: boolean;
@@ -139,7 +140,7 @@ export default function ProfilePage() {
                 <Shield size={13} /> Become an Issuer
               </Link>
             )}
-            <a href="/auth/signin" onClick={(e) => { e.preventDefault(); fetch("/api/auth/signout", {method:"POST"}).then(() => window.location.href="/"); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)", color: "var(--text-secondary)", border: "1.5px solid var(--border)", textDecoration: "none", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13 }}>
+            <a href="/" onClick={(e) => { e.preventDefault(); void clientSignOut({ callbackUrl: "/" }); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)", color: "var(--text-secondary)", border: "1.5px solid var(--border)", textDecoration: "none", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13 }}>
               <LogOut size={13} /> Sign out
             </a>
           </div>

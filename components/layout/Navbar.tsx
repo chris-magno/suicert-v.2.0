@@ -7,6 +7,7 @@ import GoogleSignInButton from "@/components/wallet/GoogleSignInButton";
 import { useWalletSession } from "@/lib/wallet/context";
 import { useCurrentAccount } from "@mysten/dapp-kit";
 import { useEffect, useState } from "react";
+import { signOut as clientSignOut } from "next-auth/react";
 
 interface AuthSessionResponse {
   user?: { email?: string | null; name?: string | null; image?: string | null };
@@ -231,9 +232,7 @@ export default function Navbar() {
                   </Link>
                   <button
                     onClick={() => {
-                      fetch("/api/auth/signout", { method: "POST" })
-                        .then(() => { window.location.href = "/"; })
-                        .catch(() => { window.location.href = "/"; });
+                      void clientSignOut({ callbackUrl: "/" });
                     }}
                     style={{
                       width: "100%",
