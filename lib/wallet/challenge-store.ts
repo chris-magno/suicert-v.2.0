@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { normalizeSuiAddress } from "@/lib/wallet/address";
 
 interface WalletChallengeRecord {
   nonce: string;
@@ -14,7 +15,7 @@ const MAX_CHALLENGES = 500;
 const challengeStore = new Map<string, WalletChallengeRecord>();
 
 function normalizeAddress(address: string): string {
-  return address.trim().toLowerCase();
+  return normalizeSuiAddress(address) ?? address.trim().toLowerCase();
 }
 
 function cleanupExpiredChallenges(now: number) {

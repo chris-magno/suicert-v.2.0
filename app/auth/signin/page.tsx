@@ -78,8 +78,8 @@ export default async function SignInPage({
           textAlign: "center", fontSize: 12, color: "var(--text-muted)",
           marginTop: 24, lineHeight: 1.6,
         }}>
-          By signing in you agree to our terms. Your Google identity derives a
-          Sui wallet via zkLogin — no private key is ever stored.
+          By signing in you agree to our terms. Google is used as your primary
+          account identity. Connect a wallet only when on-chain actions are required.
         </p>
 
         <div style={{ textAlign: "center", marginTop: 20 }}>

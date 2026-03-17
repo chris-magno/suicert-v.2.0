@@ -1,6 +1,6 @@
 // lib/supabase/index.ts — Real Supabase client (lazy initialized)
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { CertEvent, Issuer, Certificate, Attendance } from "@/types";
+import type { CertEvent, Issuer, Certificate, Attendance, UserIdentity } from "@/types";
 
 // Lazy clients — created only when first used (not at build time)
 let _supabase: SupabaseClient | null = null;
@@ -29,6 +29,86 @@ function getSupabaseAdmin(): SupabaseClient {
 function normalizeWalletAddress(walletAddress?: string): string | undefined {
   if (!walletAddress) return undefined;
   return walletAddress.trim().toLowerCase();
+}
+
+// ── User Identity (Google / zkLogin) ─────────────────────────────────────
+export async function getUserIdentityByUserId(userId: string): Promise<UserIdentity | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("user_identities")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data ? mapUserIdentity(data) : null;
+}
+
+export async function upsertUserIdentity(identity: {
+  userId: string;
+  authProvider?: "google" | "zklogin";
+  zkloginAddress?: string;
+  walletBoundAddress?: string;
+  lastWalletVerifiedAt?: string;
+}): Promise<UserIdentity> {
+  const payload = {
+    user_id: identity.userId,
+    auth_provider: identity.authProvider ?? "google",
+    zklogin_address: normalizeWalletAddress(identity.zkloginAddress),
+    wallet_bound_address: normalizeWalletAddress(identity.walletBoundAddress),
+    last_wallet_verified_at: identity.lastWalletVerifiedAt,
+  };
+
+  const { data, error } = await getSupabaseAdmin()
+    .from("user_identities")
+    .upsert(payload, { onConflict: "user_id" })
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return mapUserIdentity(data);
+}
+
+export async function bindWalletToUserIdentity(params: {
+  userId: string;
+  walletAddress: string;
+  verifiedAt?: string;
+}): Promise<UserIdentity> {
+  const existing = await getUserIdentityByUserId(params.userId).catch(() => null);
+
+  return upsertUserIdentity({
+    userId: params.userId,
+    authProvider: existing?.authProvider ?? "google",
+    zkloginAddress: existing?.zkloginAddress,
+    walletBoundAddress: params.walletAddress,
+    lastWalletVerifiedAt: params.verifiedAt ?? new Date().toISOString(),
+  });
+}
+
+export async function isWalletBoundToUser(userId: string, walletAddress: string): Promise<boolean> {
+  const identity = await getUserIdentityByUserId(userId);
+  const incoming = normalizeWalletAddress(walletAddress);
+  const bound = normalizeWalletAddress(identity?.walletBoundAddress);
+
+  if (!incoming || !bound) return false;
+  return incoming === bound;
+}
+
+export async function createAuthAuditLog(input: {
+  userId?: string;
+  authProvider?: string;
+  walletAddress?: string;
+  event: string;
+  details?: Record<string, unknown>;
+}): Promise<void> {
+  const { error } = await getSupabaseAdmin().from("auth_audit_logs").insert({
+    user_id: input.userId,
+    auth_provider: input.authProvider,
+    wallet_address: normalizeWalletAddress(input.walletAddress),
+    event: input.event,
+    details: input.details ?? {},
+  });
+
+  if (error) throw new Error(error.message);
 }
 
 // ── Events ────────────────────────────────────────────────────────────────
@@ -319,5 +399,17 @@ function mapCertificate(d: Record<string,unknown>): Certificate {
     ipfsHash: d.ipfs_hash as string|undefined, metadataUri: d.metadata_uri as string|undefined,
     aiSummary: d.ai_summary as string|undefined, qrCode: d.qr_code as string|undefined,
     verified: (d.verified as boolean) ?? false,
+  };
+}
+
+function mapUserIdentity(d: Record<string, unknown>): UserIdentity {
+  return {
+    userId: d.user_id as string,
+    authProvider: ((d.auth_provider as "google" | "zklogin" | undefined) ?? "google"),
+    zkloginAddress: (d.zklogin_address as string | undefined),
+    walletBoundAddress: (d.wallet_bound_address as string | undefined),
+    lastWalletVerifiedAt: (d.last_wallet_verified_at as string | undefined),
+    createdAt: d.created_at as string,
+    updatedAt: d.updated_at as string,
   };
 }

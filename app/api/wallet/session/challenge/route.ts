@@ -2,9 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createWalletChallenge } from "@/lib/wallet/challenge-store";
 import { consumeRateLimit, getClientIdentifier } from "@/lib/security/rate-limit";
+import { normalizeSuiAddress } from "@/lib/wallet/address";
 
 const ChallengeRequestSchema = z.object({
-  address: z.string().regex(/^0x[a-fA-F0-9]{64}$/, "address must be a valid Sui address"),
+  address: z.string().transform((value, ctx) => {
+    const normalized = normalizeSuiAddress(value);
+    if (!normalized) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "address must be a valid Sui address" });
+      return z.NEVER;
+    }
+    return normalized;
+  }),
 });
 
 function authDebug(event: string, meta: Record<string, unknown> = {}) {
@@ -45,7 +53,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Validation failed", code: "CHALLENGE_VALIDATION_FAILED", details: parsed.error.flatten() }, { status: 400 });
     }
 
-    const address = parsed.data.address.toLowerCase();
+    const address = parsed.data.address;
     const scopedLimit = consumeRateLimit({
       key: `wallet:challenge:${client}:${address}`,
       limit: 20,

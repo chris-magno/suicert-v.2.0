@@ -4,6 +4,7 @@
 
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
+import { getUserIdentityByUserId } from "@/lib/supabase";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   providers: [
@@ -14,15 +15,38 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   ],
   callbacks: {
     async session({ session, token }) {
+      let provider = typeof token.authProvider === "string" ? token.authProvider : "google";
+      let zkloginAddress = typeof token.zkloginAddress === "string" ? token.zkloginAddress : undefined;
+
+      if (token.sub) {
+        const identity = await getUserIdentityByUserId(token.sub).catch(() => null);
+        if (identity?.authProvider) provider = identity.authProvider;
+        if (identity?.zkloginAddress) zkloginAddress = identity.zkloginAddress;
+      }
+
       if (session.user && token.sub) {
         (session.user as typeof session.user & { id: string }).id = token.sub;
       }
+      (session as typeof session & { zkloginAddress?: string }).zkloginAddress = zkloginAddress;
+      (session as typeof session & { authProvider?: string }).authProvider =
+        provider;
       return session;
     },
     async jwt({ token, account }) {
       if (account) {
         token.accessToken = account.access_token;
+        token.authProvider = account.provider;
+      } else if (typeof token.authProvider !== "string") {
+        token.authProvider = "google";
       }
+
+      if (token.sub && typeof token.zkloginAddress !== "string") {
+        const identity = await getUserIdentityByUserId(token.sub).catch(() => null);
+        if (identity?.zkloginAddress) {
+          token.zkloginAddress = identity.zkloginAddress;
+        }
+      }
+
       return token;
     },
   },

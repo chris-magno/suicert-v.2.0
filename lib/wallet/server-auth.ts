@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { verifyPersonalMessageSignature, verifySignature } from "@mysten/sui/verify";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { detectWalletRole, type WalletRole, type WalletSession } from "@/lib/wallet";
+import { isNormalizedSuiAddress, normalizeSuiAddress, sameSuiAddress } from "@/lib/wallet/address";
 
 interface WalletCookiePayload {
   address: string;
@@ -16,17 +18,34 @@ export interface VerifiedWalletSession extends WalletSession {
   expiresAt: string;
 }
 
-const ADDRESS_REGEX = /^0x[a-fA-F0-9]{64}$/;
+const NETWORK_URLS: Record<string, string> = {
+  mainnet: "https://fullnode.mainnet.sui.io:443",
+  testnet: "https://fullnode.testnet.sui.io:443",
+  devnet: "https://fullnode.devnet.sui.io:443",
+};
+
+let _suiClient: SuiJsonRpcClient | null = null;
+
+function getSuiClient(): SuiJsonRpcClient {
+  if (!_suiClient) {
+    const network = ((process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet").toLowerCase() as "mainnet" | "testnet" | "devnet");
+    const url = NETWORK_URLS[network] ?? NETWORK_URLS.testnet;
+    _suiClient = new SuiJsonRpcClient({ url, network });
+  }
+  return _suiClient;
+}
 
 async function verifyWalletMessageSignature(message: Uint8Array, signature: string, address: string): Promise<boolean> {
+  const client = getSuiClient();
+
   try {
-    await verifyPersonalMessageSignature(message, signature, { address });
-    return true;
+    const publicKey = await verifyPersonalMessageSignature(message, signature, { client });
+    return sameSuiAddress(publicKey.toSuiAddress(), address);
   } catch {
     try {
       // Compatibility fallback for sessions created with legacy signMessage wallets.
-      await verifySignature(message, signature, { address });
-      return true;
+      const publicKey = await verifySignature(message, signature);
+      return sameSuiAddress(publicKey.toSuiAddress(), address);
     } catch {
       return false;
     }
@@ -42,8 +61,12 @@ function parseWalletCookiePayload(req: NextRequest): WalletCookiePayload | null 
     if (!parsed.address || !parsed.nonce || !parsed.message || !parsed.signature || !parsed.expiresAt || !parsed.verifiedAt) {
       return null;
     }
+
+    const normalizedAddress = normalizeSuiAddress(parsed.address);
+    if (!normalizedAddress) return null;
+
     return {
-      address: parsed.address.trim().toLowerCase(),
+      address: normalizedAddress,
       nonce: parsed.nonce,
       message: parsed.message,
       signature: parsed.signature,
@@ -59,7 +82,7 @@ export async function getVerifiedWalletSession(req: NextRequest): Promise<Verifi
   const payload = parseWalletCookiePayload(req);
   if (!payload) return null;
 
-  if (!ADDRESS_REGEX.test(payload.address)) return null;
+  if (!isNormalizedSuiAddress(payload.address)) return null;
   const expiresAtMs = new Date(payload.expiresAt).getTime();
   if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) return null;
 

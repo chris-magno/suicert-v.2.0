@@ -97,6 +97,16 @@ export interface AdminStats {
   activeNow: number;
 }
 
+export interface UserIdentity {
+  userId: string;
+  authProvider: "google" | "zklogin";
+  zkloginAddress?: string;
+  walletBoundAddress?: string;
+  lastWalletVerifiedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── Sui Blockchain Types ──────────────────────────────────────────────────────
 
 export interface SuiMintResult {

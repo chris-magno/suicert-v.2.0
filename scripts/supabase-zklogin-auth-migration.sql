@@ -1,0 +1,73 @@
+-- Incremental migration for unified Google/zkLogin identity fields
+-- Run this in Supabase SQL Editor for existing databases.
+-- This migration is additive and does NOT modify existing domain tables
+-- such as issuers, events, attendance, or certificates.
+
+create extension if not exists "pgcrypto";
+
+create table if not exists user_identities (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  auth_provider text not null default 'google'
+    check (auth_provider in ('google', 'zklogin')),
+  zklogin_address text,
+  wallet_bound_address text,
+  last_wallet_verified_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists user_identities_zklogin_address_uniq
+  on user_identities (lower(zklogin_address))
+  where zklogin_address is not null;
+
+create unique index if not exists user_identities_wallet_bound_address_uniq
+  on user_identities (lower(wallet_bound_address))
+  where wallet_bound_address is not null;
+
+create index if not exists user_identities_auth_provider_idx
+  on user_identities (auth_provider);
+
+create or replace function set_user_identities_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_user_identities_updated_at on user_identities;
+
+create trigger trg_user_identities_updated_at
+before update on user_identities
+for each row execute procedure set_user_identities_updated_at();
+
+create table if not exists auth_audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  auth_provider text,
+  wallet_address text,
+  event text not null,
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists auth_audit_logs_user_id_idx on auth_audit_logs(user_id);
+create index if not exists auth_audit_logs_event_idx on auth_audit_logs(event);
+create index if not exists auth_audit_logs_created_at_idx on auth_audit_logs(created_at desc);
+
+alter table user_identities enable row level security;
+alter table auth_audit_logs enable row level security;
+
+drop policy if exists "Users can view own identity" on user_identities;
+create policy "Users can view own identity" on user_identities
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "Users can update own identity" on user_identities;
+create policy "Users can update own identity" on user_identities
+  for update using (auth.uid() = user_id);
+
+drop policy if exists "Users can view own auth logs" on auth_audit_logs;
+create policy "Users can view own auth logs" on auth_audit_logs
+  for select using (auth.uid() = user_id);

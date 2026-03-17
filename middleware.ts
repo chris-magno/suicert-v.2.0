@@ -5,6 +5,33 @@ const ADMIN_ONLY  = ["/admin"];
 const ISSUER_ONLY = ["/issuer"];
 const AUTH_NEEDED = ["/profile"];
 
+interface MiddlewareWalletSession {
+  address: string;
+  role: "admin" | "issuer" | "user";
+}
+
+async function getVerifiedWalletSession(req: NextRequest): Promise<MiddlewareWalletSession | null> {
+  const cookie = req.headers.get("cookie");
+  if (!cookie || !cookie.includes("suicert_wallet_session=")) return null;
+
+  try {
+    const url = new URL("/api/wallet/session", req.url);
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { cookie },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+
+    const body = await res.json();
+    const session = body?.session as MiddlewareWalletSession | null | undefined;
+    if (!session?.address || !session?.role) return null;
+    return session;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
@@ -21,18 +48,18 @@ export async function middleware(req: NextRequest) {
   }
 
   // Check sessions
-  const walletSession = req.cookies.get("suicert_wallet_session")?.value;
   const googleSession =
     req.cookies.get("authjs.session-token")?.value ??
     req.cookies.get("__Secure-authjs.session-token")?.value;
+  const hasGoogleSession = Boolean(googleSession);
 
-  const isAuthenticated = !!(walletSession || googleSession);
+  const walletSession = await getVerifiedWalletSession(req);
 
-  // Auth-required routes
-  const needsAuth = [...ADMIN_ONLY, ...ISSUER_ONLY, ...AUTH_NEEDED]
+  // User and issuer routes use Google session as the primary identity.
+  const needsGoogleAuth = [...ISSUER_ONLY, ...AUTH_NEEDED]
     .some((p) => pathname.startsWith(p));
 
-  if (needsAuth && !isAuthenticated) {
+  if (needsGoogleAuth && !hasGoogleSession) {
     const url = req.nextUrl.clone();
     url.pathname = "/auth/signin";
     url.searchParams.set("callbackUrl", pathname);
@@ -47,17 +74,10 @@ export async function middleware(req: NextRequest) {
       url.searchParams.set("error", "wallet_required_for_admin");
       return NextResponse.redirect(url);
     }
-    try {
-      const session = JSON.parse(walletSession);
-      if (session.role !== "admin") {
-        const url = req.nextUrl.clone();
-        url.pathname = "/dashboard";
-        url.searchParams.set("error", "unauthorized");
-        return NextResponse.redirect(url);
-      }
-    } catch {
+    if (walletSession.role !== "admin") {
       const url = req.nextUrl.clone();
-      url.pathname = "/auth/signin";
+      url.pathname = "/dashboard";
+      url.searchParams.set("error", "unauthorized");
       return NextResponse.redirect(url);
     }
   }

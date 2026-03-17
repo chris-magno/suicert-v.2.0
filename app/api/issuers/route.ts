@@ -2,11 +2,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { IssuerApplicationSchema } from "@/lib/validators";
 import { verifyIssuer } from "@/lib/ai";
-import { createIssuer, getIssuers, updateIssuerStatus, getIssuerByWallet } from "@/lib/supabase";
-import { isAdminWalletSession } from "@/lib/wallet/server-auth";
+import { createIssuer, getIssuers, updateIssuerStatus, getIssuerByWallet, isWalletBoundToUser } from "@/lib/supabase";
+import { auth } from "@/lib/auth";
+import { getVerifiedWalletSession, isAdminWalletSession } from "@/lib/wallet/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await auth();
+    const user = session?.user as { id?: string; email?: string } | undefined;
+    if (!user?.id || !user?.email) {
+      return NextResponse.json({ error: "Google session required" }, { status: 401 });
+    }
+
+    const verifiedWalletSession = await getVerifiedWalletSession(req);
+    if (!verifiedWalletSession?.address) {
+      return NextResponse.json({
+        error: "Verified wallet session required for issuer onboarding",
+        code: "WALLET_AUTH_REQUIRED",
+      }, { status: 401 });
+    }
+
+    const walletBound = await isWalletBoundToUser(user.id, verifiedWalletSession.address).catch(() => false);
+    if (!walletBound) {
+      return NextResponse.json({
+        error: "Wallet must be bound to your account before applying as issuer",
+        code: "WALLET_NOT_BOUND",
+      }, { status: 403 });
+    }
+
     const body   = await req.json();
     const result = IssuerApplicationSchema.safeParse(body);
     if (!result.success) {
@@ -15,20 +38,7 @@ export async function POST(req: NextRequest) {
     const data     = result.data;
     const aiResult = await verifyIssuer(data);
 
-    let walletAddress = data.suiWalletAddress || undefined;
-    if (!walletAddress) {
-      const walletCookie = req.cookies.get("suicert_wallet_session")?.value;
-      if (walletCookie) {
-        try {
-          const ws = JSON.parse(walletCookie);
-          if (typeof ws?.address === "string" && ws.address.startsWith("0x")) {
-            walletAddress = ws.address;
-          }
-        } catch {
-          // Ignore malformed cookie and continue without wallet address.
-        }
-      }
-    }
+    const walletAddress = verifiedWalletSession.address;
 
     if (walletAddress) {
       const existing = await getIssuerByWallet(walletAddress).catch(() => null);
@@ -39,7 +49,7 @@ export async function POST(req: NextRequest) {
 
     const issuer = await createIssuer({
       walletAddress,
-      email: data.email, name: data.name, organization: data.organization,
+      email: user.email, name: data.name, organization: data.organization,
       website: data.website, description: data.description,
       aiScore: aiResult.score, aiSummary: aiResult.summary,
       status: "pending",

@@ -1,5 +1,6 @@
 // lib/wallet/index.ts
 // Role detection — queries Sui RPC to check what Cap objects the wallet owns
+import { normalizeSuiAddress } from "./address";
 
 export type WalletRole = "admin" | "issuer" | "user";
 
@@ -18,8 +19,9 @@ const NETWORK_URLS: Record<string, string> = {
 };
 
 export async function detectWalletRole(address: string): Promise<WalletSession> {
+  const normalizedAddress = normalizeSuiAddress(address) ?? address;
   const packageId = process.env.NEXT_PUBLIC_SUI_PACKAGE_ID;
-  if (!packageId) return { address, role: "user" };
+  if (!packageId) return { address: normalizedAddress, role: "user" };
 
   const network = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
   const rpcUrl  = NETWORK_URLS[network] ?? NETWORK_URLS.testnet;
@@ -33,7 +35,7 @@ export async function detectWalletRole(address: string): Promise<WalletSession> 
         id: 1,
         method: "suix_getOwnedObjects",
         params: [
-          address,
+          normalizedAddress,
           { filter: { Package: packageId }, options: { showType: true, showContent: true } },
           null,
           50,
@@ -50,7 +52,7 @@ export async function detectWalletRole(address: string): Promise<WalletSession> 
       (o.data?.type ?? "").includes("::soulbound::AdminCap")
     );
     if (adminCapObj?.data?.objectId) {
-      return { address, role: "admin", adminCapId: adminCapObj.data.objectId };
+      return { address: normalizedAddress, role: "admin", adminCapId: adminCapObj.data.objectId };
     }
 
     // IssuerCap
@@ -60,16 +62,16 @@ export async function detectWalletRole(address: string): Promise<WalletSession> 
     if (issuerCapObj?.data?.objectId) {
       const fields = (issuerCapObj.data.content as Record<string, Record<string, unknown>>)?.fields ?? {};
       return {
-        address,
+        address: normalizedAddress,
         role: "issuer",
         issuerCapId: issuerCapObj.data.objectId,
         issuerCapActive: fields.active === true,
       };
     }
 
-    return { address, role: "user" };
+    return { address: normalizedAddress, role: "user" };
   } catch (err) {
     console.error("[detectWalletRole]", err);
-    return { address, role: "user" };
+    return { address: normalizedAddress, role: "user" };
   }
 }

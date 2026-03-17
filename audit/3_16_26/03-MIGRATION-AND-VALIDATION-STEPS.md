@@ -51,4 +51,4 @@ Purpose: Move updated issuer workflow safely to Supabase and verify behavior.
 - Current expected: may succeed if wallet matches issuer (security gap)
 
 ## E. Deployment Recommendation
-Do not deploy to production until remediations in steps/02-REMEDIATION-PLAN.md are complete.
+Do not deploy to production until remediations in audit/3_16_26/02-REMEDIATION-PLAN.md are complete.

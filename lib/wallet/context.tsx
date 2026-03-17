@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useCurrentAccount, useSignPersonalMessage } from "@mysten/dapp-kit";
 import { detectWalletRole, type WalletSession } from "./index";
+import { sameSuiAddress } from "./address";
 
 interface WalletContextValue {
   session:   WalletSession | null;
@@ -16,6 +17,13 @@ interface WalletContextValue {
   connected: boolean;
   authenticate: () => Promise<boolean>;
   refresh:   () => void;
+}
+
+interface FlexibleSignedMessage {
+  signatureSerialized?: string;
+  signature?: string;
+  bytes?: string;
+  messageBytes?: string;
 }
 
 const WalletContext = createContext<WalletContextValue>({
@@ -80,9 +88,11 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
         if (existingRes.ok) {
           const existingBody = await existingRes.json();
           const existingSession = existingBody?.session as WalletSession | null | undefined;
-          if (existingSession?.address?.toLowerCase() === account.address.toLowerCase()) {
+          if (sameSuiAddress(existingSession?.address, account.address)) {
             setAuthenticated(true);
-            setSession((prev) => prev ?? existingSession);
+            if (existingSession) {
+              setSession((prev) => prev ?? existingSession);
+            }
             return true;
           }
         }
@@ -113,17 +123,19 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
           message: new TextEncoder().encode(challengeBody.message),
         });
 
+      const signedPayload = signed as unknown as FlexibleSignedMessage;
+
       const signature =
-        typeof (signed as { signatureSerialized?: unknown })?.signatureSerialized === "string"
-          ? (signed as { signatureSerialized: string }).signatureSerialized
-          : typeof (signed as { signature?: unknown })?.signature === "string"
-            ? (signed as { signature: string }).signature
+        typeof signedPayload.signatureSerialized === "string"
+          ? signedPayload.signatureSerialized
+          : typeof signedPayload.signature === "string"
+            ? signedPayload.signature
             : "";
       const signedBytes =
-        typeof (signed as { bytes?: unknown })?.bytes === "string"
-          ? (signed as { bytes: string }).bytes
-          : typeof (signed as { messageBytes?: unknown })?.messageBytes === "string"
-            ? (signed as { messageBytes: string }).messageBytes
+        typeof signedPayload.bytes === "string"
+          ? signedPayload.bytes
+          : typeof signedPayload.messageBytes === "string"
+            ? signedPayload.messageBytes
             : "";
         if (!signature) {
           setAuthError("Wallet returned an invalid signature format.");
@@ -166,7 +178,7 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
 
         const confirmedBody = await confirmedRes.json();
         const confirmedSession = confirmedBody?.session as WalletSession | null | undefined;
-        const isSameWallet = confirmedSession?.address?.toLowerCase() === account.address.toLowerCase();
+        const isSameWallet = sameSuiAddress(confirmedSession?.address, account.address);
         if (!confirmedSession || !isSameWallet) {
           setAuthenticated(false);
           setAuthError("Authenticated session does not match connected wallet.");
@@ -197,8 +209,6 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
       setSession(null);
       setAuthenticated(false);
       setAuthError(null);
-      // Clear server-side cookie
-      fetch("/api/wallet/session", { method: "DELETE" }).catch(() => {});
       return;
     }
     setLoading(true);
@@ -215,7 +225,7 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
 
         const existingBody = await existingRes.json();
         const existingSession = existingBody?.session as WalletSession | null | undefined;
-        const isSameWallet = existingSession?.address?.toLowerCase() === account.address.toLowerCase();
+        const isSameWallet = sameSuiAddress(existingSession?.address, account.address);
         setAuthenticated(Boolean(existingSession && isSameWallet));
         if (existingSession && isSameWallet) setAuthError(null);
 
