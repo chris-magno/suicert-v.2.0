@@ -6,6 +6,14 @@ import Link from "next/link";
 import { Shield } from "lucide-react";
 import { signIn } from "@/lib/auth";
 
+const ERROR_MESSAGES: Record<string, string> = {
+  OAuthSignin: "Google sign-in could not be started. Please retry.",
+  OAuthCallback: "Google OAuth callback failed. Check redirect URI and try again.",
+  AccessDenied: "Access denied by Google or account policy.",
+  Configuration: "Google auth configuration is invalid on the server.",
+  Default: "Sign-in failed. Please try again.",
+};
+
 export default async function SignInPage({
   searchParams,
 }: {
@@ -13,6 +21,8 @@ export default async function SignInPage({
 }) {
   const params = await searchParams;
   const callbackUrl = params.callbackUrl ?? "/dashboard";
+  const targetAfterZk = `/auth/zklogin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+  const errorMessage = params.error ? (ERROR_MESSAGES[params.error] ?? ERROR_MESSAGES.Default) : null;
 
   return (
     <div style={{
@@ -50,7 +60,7 @@ export default async function SignInPage({
         <form
           action={async () => {
             "use server";
-            await signIn("google", { redirectTo: callbackUrl });
+            await signIn("google", { redirectTo: targetAfterZk });
           }}
         >
           <button
@@ -74,6 +84,12 @@ export default async function SignInPage({
           </button>
         </form>
 
+        {errorMessage && (
+          <div style={{ marginTop: 14, border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 10, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
+            {errorMessage}
+          </div>
+        )}
+
         <p style={{
           textAlign: "center", fontSize: 12, color: "var(--text-muted)",
           marginTop: 24, lineHeight: 1.6,
@@ -83,6 +99,10 @@ export default async function SignInPage({
         </p>
 
         <div style={{ textAlign: "center", marginTop: 20 }}>
+          <Link href="/auth/zklogin" style={{ display: "inline-block", marginBottom: 10, fontSize: 13, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}>
+            Test zkLogin flow
+          </Link>
+          <br />
           <Link href="/" style={{ fontSize: 13, color: "var(--accent)", textDecoration: "none", fontWeight: 500 }}>
             ← Back to SUICERT
           </Link>

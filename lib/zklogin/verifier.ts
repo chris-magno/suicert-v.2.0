@@ -64,6 +64,47 @@ class FailClosedZkLoginVerifier implements ZkLoginVerifier {
   }
 }
 
+class DevBypassZkLoginVerifier implements ZkLoginVerifier {
+  async verify(input: VerifyZkLoginProofInput): Promise<VerifyZkLoginProofResult> {
+    const proofAddress = input.proof.address ? normalizeSuiAddress(input.proof.address) : undefined;
+    const expectedAddress = input.expectedAddress ? normalizeSuiAddress(input.expectedAddress) : undefined;
+
+    const selectedAddress = proofAddress ?? expectedAddress;
+    if (!selectedAddress) {
+      return {
+        verified: false,
+        code: "INVALID_PROOF",
+        reason: "Dev verifier requires proof.address or expectedAddress",
+        verifierId: "dev-bypass",
+      };
+    }
+
+    if (expectedAddress && selectedAddress !== expectedAddress) {
+      return {
+        verified: false,
+        code: "ADDRESS_MISMATCH",
+        reason: "Proof address does not match expected address",
+        verifierId: "dev-bypass",
+        metadata: { proofAddress: selectedAddress, expectedAddress },
+      };
+    }
+
+    return {
+      verified: true,
+      normalizedAddress: selectedAddress,
+      code: "VERIFIED",
+      verifierId: "dev-bypass",
+      metadata: {
+        warning: "Development-only zkLogin verifier bypass in use",
+        network: input.network,
+      },
+    };
+  }
+}
+
 export function getZkLoginVerifier(): ZkLoginVerifier {
+  if (process.env.NODE_ENV !== "production" && process.env.ZKLOGIN_DEV_BYPASS === "true") {
+    return new DevBypassZkLoginVerifier();
+  }
   return new FailClosedZkLoginVerifier();
 }

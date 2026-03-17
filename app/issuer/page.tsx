@@ -26,6 +26,10 @@ export default function IssuerPage() {
   const [proofTxDigest, setProofTxDigest] = useState("");
   const [proofCapId, setProofCapId] = useState("");
   const [proofSubmitting, setProofSubmitting] = useState(false);
+  const [zkloginAddress, setZkloginAddress] = useState<string | null>(null);
+  const [walletBoundAddress, setWalletBoundAddress] = useState<string | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(true);
+  const [bindingWallet, setBindingWallet] = useState(false);
 
   // Load current user's issuer profile and events
   useEffect(() => {
@@ -45,7 +49,38 @@ export default function IssuerPage() {
       .finally(() => setLoadingIssuer(false));
   }, []);
 
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/auth/zklogin/verify").then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch("/api/auth/wallet/bind").then((r) => r.ok ? r.json() : null).catch(() => null),
+    ])
+      .then(([zkRes, bindRes]) => {
+        const identity = zkRes?.identity as { zkloginAddress?: string | null } | undefined;
+        setZkloginAddress(identity?.zkloginAddress ?? null);
+        setWalletBoundAddress((bindRes?.walletBoundAddress as string | null | undefined) ?? null);
+      })
+      .finally(() => setIdentityLoading(false));
+  }, []);
+
   async function handleApply() {
+    if (!zkloginAddress) {
+      toast({
+        title: "zkLogin verification required",
+        description: "Complete zkLogin verification first.",
+        variant: "warning",
+      });
+      return;
+    }
+
+    if (!walletBoundAddress) {
+      toast({
+        title: "Wallet bind required",
+        description: "Bind your authenticated wallet before applying as issuer.",
+        variant: "warning",
+      });
+      return;
+    }
+
     const newErrors: Record<string, string> = {};
     if (!form.name.trim()) newErrors.name = "Name is required";
     if (!form.organization.trim()) newErrors.organization = "Organization is required";
@@ -76,6 +111,42 @@ export default function IssuerPage() {
       });
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function bindWalletToAccount() {
+    setBindingWallet(true);
+    try {
+      if (!authenticated) {
+        const ok = await authenticate();
+        if (!ok) {
+          toast({
+            title: "Wallet authentication required",
+            description: "Please sign the wallet challenge first.",
+            variant: "warning",
+          });
+          return;
+        }
+      }
+
+      const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "Wallet bind failed");
+
+      setWalletBoundAddress((data?.walletBoundAddress as string | null | undefined) ?? null);
+      toast({
+        title: "Wallet bound",
+        description: "Wallet successfully linked to your account.",
+        variant: "success",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Wallet bind failed",
+        description: err instanceof Error ? err.message : "Unable to bind wallet",
+        variant: "error",
+      });
+    } finally {
+      setBindingWallet(false);
     }
   }
 
@@ -298,6 +369,32 @@ export default function IssuerPage() {
                 <p style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 28 }}>
                   Our AI will verify your credentials in under 2 minutes.
                 </p>
+
+                <div style={{ marginBottom: 20, padding: "14px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)", display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Google login</p>
+                    <Badge variant="success" dot>Connected</Badge>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>zkLogin verification</p>
+                    {identityLoading ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Checking...</span> : zkloginAddress ? <Badge variant="success" dot>Verified</Badge> : <Badge variant="warning" dot>Required</Badge>}
+                  </div>
+                  {!identityLoading && !zkloginAddress && (
+                    <Button variant="secondary" size="sm" onClick={() => { window.location.href = "/auth/zklogin?callbackUrl=/issuer"; }} style={{ width: "fit-content" }}>
+                      Verify zkLogin
+                    </Button>
+                  )}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Wallet bind</p>
+                    {identityLoading ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Checking...</span> : walletBoundAddress ? <Badge variant="success" dot>Bound</Badge> : <Badge variant="warning" dot>Required</Badge>}
+                  </div>
+                  {!identityLoading && !walletBoundAddress && (
+                    <Button variant="secondary" size="sm" loading={bindingWallet || authenticating} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
+                      {authenticated ? "Bind current wallet" : "Authenticate and bind wallet"}
+                    </Button>
+                  )}
+                </div>
+
                 <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                     <Input label="Full Name" placeholder="Dr. Maria Santos" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} error={errors.name} />
@@ -306,7 +403,7 @@ export default function IssuerPage() {
                   <Input label="Email" type="email" placeholder="maria@yourorg.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} error={errors.email} hint="Use an organizational email for higher trust score" />
                   <Input label="Website (optional)" placeholder="https://yourorg.com" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} />
                   <Textarea label="Organization Description" placeholder="Describe your organization and why you want to issue certificates (min. 50 characters)..." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} error={errors.description} rows={5} />
-                  <Button variant="sui" size="lg" loading={submitting} onClick={handleApply} icon={<Shield size={16} />} style={{ width: "100%", justifyContent: "center" }}>
+                  <Button variant="sui" size="lg" loading={submitting} disabled={!zkloginAddress || !walletBoundAddress || identityLoading} onClick={handleApply} icon={<Shield size={16} />} style={{ width: "100%", justifyContent: "center" }}>
                     {submitting ? "Submitting & running AI check..." : "Submit Application"}
                   </Button>
                 </div>

@@ -11,9 +11,22 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      authorization: {
+        params: {
+          scope: "openid email profile",
+          prompt: "select_account",
+          access_type: "offline",
+          response_type: "code",
+        },
+      },
     }),
   ],
   callbacks: {
+    async signIn({ profile }) {
+      // Meeting attendance relies on stable Google identity (email), so fail early if missing.
+      if (!profile?.email) return false;
+      return true;
+    },
     async session({ session, token }) {
       let provider = typeof token.authProvider === "string" ? token.authProvider : "google";
       let zkloginAddress = typeof token.zkloginAddress === "string" ? token.zkloginAddress : undefined;
