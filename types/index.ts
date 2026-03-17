@@ -107,6 +107,17 @@ export interface UserIdentity {
   updatedAt: string;
 }
 
+export interface PublicProfile {
+  id: string;
+  name: string;
+  organization: string;
+  website?: string;
+  description: string;
+  aiScore?: number;
+  verifiedAt?: string;
+  createdAt: string;
+}
+
 // ── Sui Blockchain Types ──────────────────────────────────────────────────────
 
 export interface SuiMintResult {

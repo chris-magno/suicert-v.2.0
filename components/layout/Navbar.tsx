@@ -9,7 +9,7 @@ import { useCurrentAccount } from "@mysten/dapp-kit";
 import { useEffect, useState } from "react";
 
 interface AuthSessionResponse {
-  user?: { email?: string | null };
+  user?: { email?: string | null; name?: string | null; image?: string | null };
 }
 
 interface ZkIdentityResponse {
@@ -27,6 +27,9 @@ export default function Navbar() {
   const [zkloginVerified, setZkloginVerified] = useState(false);
   const [walletBound, setWalletBound] = useState(false);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [googleUserName, setGoogleUserName] = useState<string | null>(null);
+  const [googleUserImage, setGoogleUserImage] = useState<string | null>(null);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -44,8 +47,12 @@ export default function Navbar() {
         if (sessionRes?.ok) {
           const sessionBody = await sessionRes.json() as AuthSessionResponse;
           setGoogleConnected(Boolean(sessionBody?.user?.email));
+          setGoogleUserName(sessionBody?.user?.name ?? null);
+          setGoogleUserImage(sessionBody?.user?.image ?? null);
         } else {
           setGoogleConnected(false);
+          setGoogleUserName(null);
+          setGoogleUserImage(null);
         }
 
         if (zkRes?.ok) {
@@ -166,7 +173,87 @@ export default function Navbar() {
               </Link>
             ))}
           </div>
-          {!account && <GoogleSignInButton />}
+          {!googleConnected && <GoogleSignInButton />}
+          {googleConnected && (
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setProfileMenuOpen((v) => !v)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  border: "1.5px solid var(--border)",
+                  background: "var(--bg-card)",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                  overflow: "hidden",
+                }}
+                title="Account menu"
+              >
+                {googleUserImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={googleUserImage} alt={googleUserName ?? "Profile"} width={32} height={32} style={{ width: 32, height: 32, borderRadius: "50%" }} />
+                ) : (
+                  <span>{(googleUserName ?? "U").charAt(0).toUpperCase()}</span>
+                )}
+              </button>
+
+              {profileMenuOpen && (
+                <div
+                  onMouseLeave={() => setProfileMenuOpen(false)}
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    right: 0,
+                    minWidth: 200,
+                    borderRadius: "var(--radius)",
+                    background: "var(--bg-card)",
+                    border: "1.5px solid var(--border)",
+                    boxShadow: "var(--shadow-lg)",
+                    zIndex: 60,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--text-muted)" }}>
+                    {googleUserName ?? "Google account"}
+                  </div>
+                  <Link
+                    href="/profile"
+                    onClick={() => setProfileMenuOpen(false)}
+                    style={{ display: "block", padding: "10px 12px", textDecoration: "none", color: "var(--text-secondary)", fontSize: 13, fontWeight: 600 }}
+                  >
+                    My Profile
+                  </Link>
+                  <button
+                    onClick={() => {
+                      fetch("/api/auth/signout", { method: "POST" })
+                        .then(() => { window.location.href = "/"; })
+                        .catch(() => { window.location.href = "/"; });
+                    }}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      border: "none",
+                      borderTop: "1px solid var(--border)",
+                      background: "transparent",
+                      color: "#dc2626",
+                      padding: "10px 12px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <ConnectButton />
         </div>
       </div>

@@ -3,9 +3,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Award, Shield, ExternalLink, LogOut, ChevronRight } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
-import { Card, Badge } from "@/components/ui";
+import { Card, Badge, Button } from "@/components/ui";
 import CertificateDisplay from "@/components/certificates/CertificateDisplay";
 import type { Certificate, Issuer } from "@/types";
+import { useWalletSession } from "@/lib/wallet/context";
+import { useToast } from "@/components/ui/ToastProvider";
 
 interface ProfileData {
   authenticated: boolean;
@@ -14,10 +16,16 @@ interface ProfileData {
 }
 
 export default function ProfilePage() {
+  const { authenticated, authenticating, authenticate } = useWalletSession();
+  const { toast } = useToast();
   const [profile, setProfile]   = useState<ProfileData | null>(null);
   const [certs, setCerts]       = useState<Certificate[]>([]);
   const [loading, setLoading]   = useState(true);
   const [tab, setTab]           = useState<"certs" | "issuer">("certs");
+  const [zkloginAddress, setZkloginAddress] = useState<string | null>(null);
+  const [walletBoundAddress, setWalletBoundAddress] = useState<string | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(true);
+  const [bindingWallet, setBindingWallet] = useState(false);
 
   useEffect(() => {
     // Load user's issuer profile (also tells us if they're logged in)
@@ -37,7 +45,53 @@ export default function ProfilePage() {
       .then((r) => r.json())
       .then(setCerts)
       .catch(() => setCerts([]));
+
+    Promise.all([
+      fetch("/api/auth/zklogin/verify").then((r) => r.ok ? r.json() : null).catch(() => null),
+      fetch("/api/auth/wallet/bind").then((r) => r.ok ? r.json() : null).catch(() => null),
+    ])
+      .then(([zkRes, bindRes]) => {
+        const identity = zkRes?.identity as { zkloginAddress?: string | null } | undefined;
+        setZkloginAddress(identity?.zkloginAddress ?? null);
+        setWalletBoundAddress((bindRes?.walletBoundAddress as string | null | undefined) ?? null);
+      })
+      .finally(() => setIdentityLoading(false));
   }, []);
+
+  async function bindWalletToAccount() {
+    setBindingWallet(true);
+    try {
+      if (!authenticated) {
+        const ok = await authenticate();
+        if (!ok) {
+          toast({
+            title: "Wallet authentication required",
+            description: "Sign wallet challenge first, then bind.",
+            variant: "warning",
+          });
+          return;
+        }
+      }
+
+      const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "Wallet bind failed");
+      setWalletBoundAddress((data?.walletBoundAddress as string | null | undefined) ?? null);
+      toast({
+        title: "Wallet bound",
+        description: "Wallet is now linked to your account.",
+        variant: "success",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Wallet bind failed",
+        description: err instanceof Error ? err.message : "Failed to bind wallet",
+        variant: "error",
+      });
+    } finally {
+      setBindingWallet(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -95,6 +149,7 @@ export default function ProfilePage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 32 }}>
           {[
             { href: "/dashboard", icon: <Award size={18} />, label: "Browse Events", desc: "Find certification seminars", color: "var(--accent)" },
+            { href: "/profiles", icon: <ExternalLink size={18} />, label: "Public Profiles", desc: "Visit other verified profiles", color: "var(--sui-blue)" },
             { href: "/issuer",    icon: <Shield size={18} />, label: profile.issuer ? "Issuer Portal" : "Become an Issuer", desc: profile.issuer ? "Manage your events" : "Apply as an issuer", color: "var(--mint)" },
             { href: "/verify/demo", icon: <ExternalLink size={18} />, label: "Verify Certificate", desc: "Check any certificate QR", color: "var(--gold)" },
           ].map((item) => (
@@ -112,6 +167,37 @@ export default function ProfilePage() {
             </Link>
           ))}
         </div>
+
+        <Card style={{ padding: "20px", marginBottom: 24 }}>
+          <h3 style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, marginBottom: 8 }}>Identity Upgrade</h3>
+          <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 14 }}>
+            Base privilege is view-only with Google login. Upgrade identity to unlock issuer onboarding.
+          </p>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Google connected</span>
+              <Badge variant="success" dot>Connected</Badge>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>zkLogin verified</span>
+              {identityLoading ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span> : zkloginAddress ? <Badge variant="success" dot>Verified</Badge> : <Badge variant="warning" dot>Required</Badge>}
+            </div>
+            {!identityLoading && !zkloginAddress && (
+              <Button variant="secondary" size="sm" onClick={() => { window.location.href = "/auth/zklogin?callbackUrl=/profile"; }} style={{ width: "fit-content" }}>
+                Verify zkLogin
+              </Button>
+            )}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Wallet bound</span>
+              {identityLoading ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span> : walletBoundAddress ? <Badge variant="success" dot>Bound</Badge> : <Badge variant="warning" dot>Required for issuer</Badge>}
+            </div>
+            {!identityLoading && !walletBoundAddress && (
+              <Button variant="secondary" size="sm" loading={bindingWallet || authenticating} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
+                {authenticated ? "Bind current wallet" : "Authenticate and bind wallet"}
+              </Button>
+            )}
+          </div>
+        </Card>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 2, background: "var(--bg-subtle)", borderRadius: "var(--radius)", padding: 4, marginBottom: 24, width: "fit-content" }}>

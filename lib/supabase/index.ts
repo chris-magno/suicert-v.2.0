@@ -1,6 +1,6 @@
 // lib/supabase/index.ts — Real Supabase client (lazy initialized)
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { CertEvent, Issuer, Certificate, Attendance, UserIdentity } from "@/types";
+import type { CertEvent, Issuer, Certificate, Attendance, UserIdentity, PublicProfile } from "@/types";
 
 // Lazy clients — created only when first used (not at build time)
 let _supabase: SupabaseClient | null = null;
@@ -109,6 +109,30 @@ export async function createAuthAuditLog(input: {
   });
 
   if (error) throw new Error(error.message);
+}
+
+export async function getPublicProfiles(): Promise<PublicProfile[]> {
+  const { data, error } = await getSupabase()
+    .from("issuers")
+    .select("id,name,organization,website,description,ai_score,verified_at,created_at,status")
+    .eq("status", "approved")
+    .order("verified_at", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(mapPublicProfile);
+}
+
+export async function getPublicProfileById(id: string): Promise<PublicProfile | null> {
+  const { data, error } = await getSupabase()
+    .from("issuers")
+    .select("id,name,organization,website,description,ai_score,verified_at,created_at,status")
+    .eq("id", id)
+    .eq("status", "approved")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data ? mapPublicProfile(data) : null;
 }
 
 // ── Events ────────────────────────────────────────────────────────────────
@@ -411,5 +435,18 @@ function mapUserIdentity(d: Record<string, unknown>): UserIdentity {
     lastWalletVerifiedAt: (d.last_wallet_verified_at as string | undefined),
     createdAt: d.created_at as string,
     updatedAt: d.updated_at as string,
+  };
+}
+
+function mapPublicProfile(d: Record<string, unknown>): PublicProfile {
+  return {
+    id: d.id as string,
+    name: d.name as string,
+    organization: d.organization as string,
+    website: d.website as string | undefined,
+    description: d.description as string,
+    aiScore: d.ai_score as number | undefined,
+    verifiedAt: d.verified_at as string | undefined,
+    createdAt: d.created_at as string,
   };
 }
