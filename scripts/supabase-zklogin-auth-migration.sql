@@ -6,7 +6,7 @@
 create extension if not exists "pgcrypto";
 
 create table if not exists user_identities (
-  user_id uuid primary key references auth.users(id) on delete cascade,
+  user_id text primary key,
   auth_provider text not null default 'google'
     check (auth_provider in ('google', 'zklogin')),
   zklogin_address text,
@@ -45,13 +45,119 @@ for each row execute procedure set_user_identities_updated_at();
 
 create table if not exists auth_audit_logs (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid references auth.users(id) on delete set null,
+  user_id text,
   auth_provider text,
   wallet_address text,
   event text not null,
   details jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+-- Existing deployments may have UUID + FK based on auth.users from older drafts.
+-- This app uses NextAuth user IDs (token.sub), so identity linkage must be auth-provider agnostic.
+alter table if exists user_identities
+  drop constraint if exists user_identities_user_id_fkey;
+
+alter table if exists auth_audit_logs
+  drop constraint if exists auth_audit_logs_user_id_fkey;
+
+-- Policies can depend on user_id type; drop before type conversion and recreate later.
+drop policy if exists "Users can view own identity" on user_identities;
+drop policy if exists "Users can update own identity" on user_identities;
+drop policy if exists "Users can view own auth logs" on auth_audit_logs;
+
+do $$
+declare
+  r record;
+begin
+  for r in
+    select schemaname, tablename, policyname
+    from pg_policies
+    where schemaname = 'public'
+      and tablename in ('user_identities', 'auth_audit_logs')
+  loop
+    execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
+  end loop;
+end $$;
+
+-- Some environments may have non-standard FK names; drop any FK attached to user_id columns.
+do $$
+declare
+  r record;
+begin
+  for r in
+    select c.conname
+    from pg_constraint c
+    join pg_class t on t.oid = c.conrelid
+    join pg_namespace n on n.oid = t.relnamespace
+    where c.contype = 'f'
+      and n.nspname = 'public'
+      and t.relname = 'user_identities'
+      and exists (
+        select 1
+        from unnest(c.conkey) as colnum(attnum)
+        join pg_attribute a
+          on a.attrelid = c.conrelid
+         and a.attnum = colnum.attnum
+        where a.attname = 'user_id'
+      )
+  loop
+    execute format('alter table public.user_identities drop constraint if exists %I', r.conname);
+  end loop;
+end $$;
+
+do $$
+declare
+  r record;
+begin
+  for r in
+    select c.conname
+    from pg_constraint c
+    join pg_class t on t.oid = c.conrelid
+    join pg_namespace n on n.oid = t.relnamespace
+    where c.contype = 'f'
+      and n.nspname = 'public'
+      and t.relname = 'auth_audit_logs'
+      and exists (
+        select 1
+        from unnest(c.conkey) as colnum(attnum)
+        join pg_attribute a
+          on a.attrelid = c.conrelid
+         and a.attnum = colnum.attnum
+        where a.attname = 'user_id'
+      )
+  loop
+    execute format('alter table public.auth_audit_logs drop constraint if exists %I', r.conname);
+  end loop;
+end $$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'user_identities'
+      and column_name = 'user_id'
+      and data_type <> 'text'
+  ) then
+    execute 'alter table public.user_identities alter column user_id type text using user_id::text';
+  end if;
+end $$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'auth_audit_logs'
+      and column_name = 'user_id'
+      and data_type <> 'text'
+  ) then
+    execute 'alter table public.auth_audit_logs alter column user_id type text using user_id::text';
+  end if;
+end $$;
 
 create index if not exists auth_audit_logs_user_id_idx on auth_audit_logs(user_id);
 create index if not exists auth_audit_logs_event_idx on auth_audit_logs(event);
@@ -62,12 +168,12 @@ alter table auth_audit_logs enable row level security;
 
 drop policy if exists "Users can view own identity" on user_identities;
 create policy "Users can view own identity" on user_identities
-  for select using (auth.uid() = user_id);
+  for select using (auth.uid()::text = user_id);
 
 drop policy if exists "Users can update own identity" on user_identities;
 create policy "Users can update own identity" on user_identities
-  for update using (auth.uid() = user_id);
+  for update using (auth.uid()::text = user_id);
 
 drop policy if exists "Users can view own auth logs" on auth_audit_logs;
 create policy "Users can view own auth logs" on auth_audit_logs
-  for select using (auth.uid() = user_id);
+  for select using (auth.uid()::text = user_id);
