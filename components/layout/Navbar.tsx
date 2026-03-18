@@ -5,9 +5,11 @@ import { Shield } from "lucide-react";
 import ConnectButton from "@/components/wallet/ConnectButton";
 import GoogleSignInButton from "@/components/wallet/GoogleSignInButton";
 import { useWalletSession } from "@/lib/wallet/context";
+import { sameSuiAddress } from "@/lib/wallet/address";
 import { useCurrentAccount } from "@mysten/dapp-kit";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { signOut as clientSignOut } from "next-auth/react";
+import { useToast } from "@/components/ui/ToastProvider";
 
 interface AuthSessionResponse {
   user?: { email?: string | null; name?: string | null; image?: string | null };
@@ -23,14 +25,16 @@ interface WalletBindResponse {
 
 export default function Navbar() {
   const account           = useCurrentAccount();
-  const { isAdmin, isIssuer } = useWalletSession();
+  const { isAdmin, isIssuer, authenticated } = useWalletSession();
+  const { toast } = useToast();
   const [googleConnected, setGoogleConnected] = useState(false);
   const [zkloginVerified, setZkloginVerified] = useState(false);
-  const [walletBound, setWalletBound] = useState(false);
+  const [walletBoundAddress, setWalletBoundAddress] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [googleUserName, setGoogleUserName] = useState<string | null>(null);
   const [googleUserImage, setGoogleUserImage] = useState<string | null>(null);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const lastWalletMismatchToastRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -65,9 +69,9 @@ export default function Navbar() {
 
         if (bindRes?.ok) {
           const bindBody = await bindRes.json() as WalletBindResponse;
-          setWalletBound(Boolean(bindBody?.walletBoundAddress));
+          setWalletBoundAddress(bindBody?.walletBoundAddress ?? null);
         } else {
-          setWalletBound(false);
+          setWalletBoundAddress(null);
         }
       } finally {
         if (active) setStatusLoading(false);
@@ -86,6 +90,38 @@ export default function Navbar() {
     ...(isIssuer ? [{ href: "/issuer",  label: "Issuer Portal" }] : []),
     ...(isAdmin  ? [{ href: "/admin",   label: "Admin" }]         : []),
   ];
+  const walletBindMatchesCurrent = account?.address
+    ? sameSuiAddress(walletBoundAddress, account.address)
+    : Boolean(walletBoundAddress);
+  const maskedBoundAddress = walletBoundAddress
+    ? `${walletBoundAddress.slice(0, 6)}...${walletBoundAddress.slice(-4)}`
+    : null;
+  const maskedConnectedAddress = account?.address
+    ? `${account.address.slice(0, 6)}...${account.address.slice(-4)}`
+    : null;
+
+  useEffect(() => {
+    if (!account?.address || !walletBoundAddress) {
+      lastWalletMismatchToastRef.current = null;
+      return;
+    }
+
+    if (sameSuiAddress(walletBoundAddress, account.address)) {
+      lastWalletMismatchToastRef.current = null;
+      return;
+    }
+
+    const mismatchKey = `${walletBoundAddress.toLowerCase()}|${account.address.toLowerCase()}`;
+    if (lastWalletMismatchToastRef.current === mismatchKey) return;
+    lastWalletMismatchToastRef.current = mismatchKey;
+
+    toast({
+      title: "Wallet mismatch detected",
+      description: `Bound: ${maskedBoundAddress ?? "unknown"} | Connected: ${maskedConnectedAddress ?? "unknown"}`,
+      variant: "warning",
+      durationMs: 5200,
+    });
+  }, [account?.address, walletBoundAddress, maskedBoundAddress, maskedConnectedAddress, toast]);
 
   return (
     <nav style={{
@@ -139,8 +175,14 @@ export default function Navbar() {
                 href: "/auth/zklogin?callbackUrl=/dashboard",
               },
               {
-                label: "Wallet",
-                ok: walletBound,
+                label: "Wallet Auth",
+                ok: authenticated,
+                loading: false,
+                href: "/profile",
+              },
+              {
+                label: "Wallet Bind",
+                ok: walletBindMatchesCurrent,
                 loading: statusLoading,
                 href: "/issuer?tab=apply",
               },

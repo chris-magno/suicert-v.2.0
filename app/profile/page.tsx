@@ -7,6 +7,7 @@ import { Card, Badge, Button } from "@/components/ui";
 import CertificateDisplay from "@/components/certificates/CertificateDisplay";
 import type { Certificate, Issuer } from "@/types";
 import { useWalletSession } from "@/lib/wallet/context";
+import { sameSuiAddress } from "@/lib/wallet/address";
 import { useToast } from "@/components/ui/ToastProvider";
 import { signOut as clientSignOut } from "next-auth/react";
 
@@ -17,7 +18,7 @@ interface ProfileData {
 }
 
 export default function ProfilePage() {
-  const { authenticated, authenticating, authenticate } = useWalletSession();
+  const { session, connected, authenticated, authenticating, authenticate } = useWalletSession();
   const { toast } = useToast();
   const [profile, setProfile]   = useState<ProfileData | null>(null);
   const [certs, setCerts]       = useState<Certificate[]>([]);
@@ -62,16 +63,22 @@ export default function ProfilePage() {
   async function bindWalletToAccount() {
     setBindingWallet(true);
     try {
+      if (!connected) {
+        toast({
+          title: "Wallet connection required",
+          description: "Connect your wallet from the navbar first.",
+          variant: "warning",
+        });
+        return;
+      }
+
       if (!authenticated) {
-        const ok = await authenticate();
-        if (!ok) {
-          toast({
-            title: "Wallet authentication required",
-            description: "Sign wallet challenge first, then bind.",
-            variant: "warning",
-          });
-          return;
-        }
+        toast({
+          title: "Wallet authentication required",
+          description: "Authenticate wallet first, then bind.",
+          variant: "warning",
+        });
+        return;
       }
 
       const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
@@ -94,6 +101,42 @@ export default function ProfilePage() {
     }
   }
 
+  async function authenticateWallet() {
+    if (!connected) {
+      toast({
+        title: "Wallet connection required",
+        description: "Connect your wallet from the navbar first.",
+        variant: "warning",
+      });
+      return;
+    }
+
+    if (authenticated) {
+      toast({
+        title: "Wallet already authenticated",
+        description: "You can bind this wallet to your account now.",
+        variant: "info",
+      });
+      return;
+    }
+
+    const ok = await authenticate();
+    if (ok) {
+      toast({
+        title: "Wallet authenticated",
+        description: "Signature verified. You can now bind your wallet.",
+        variant: "success",
+      });
+      return;
+    }
+
+    toast({
+      title: "Wallet authentication required",
+      description: "Please sign the wallet challenge to continue.",
+      variant: "warning",
+    });
+  }
+
   if (loading) {
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
@@ -108,6 +151,20 @@ export default function ProfilePage() {
   if (!profile?.authenticated) return null; // Redirect handled above
 
   const user = profile.user!;
+  const currentWalletAddress = session?.address ?? null;
+  const walletBindMismatch = Boolean(
+    connected && currentWalletAddress && walletBoundAddress && !sameSuiAddress(walletBoundAddress, currentWalletAddress)
+  );
+  const boundToCurrentWallet = Boolean(
+    walletBoundAddress && (!connected || !currentWalletAddress || sameSuiAddress(walletBoundAddress, currentWalletAddress))
+  );
+  const maskedBoundAddress = walletBoundAddress
+    ? `${walletBoundAddress.slice(0, 6)}...${walletBoundAddress.slice(-4)}`
+    : null;
+  const maskedConnectedAddress = currentWalletAddress
+    ? `${currentWalletAddress.slice(0, 6)}...${currentWalletAddress.slice(-4)}`
+    : null;
+  const identityReadyCount = [true, Boolean(zkloginAddress), Boolean(connected), Boolean(connected && authenticated), Boolean(boundToCurrentWallet)].filter(Boolean).length;
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
@@ -169,33 +226,74 @@ export default function ProfilePage() {
           ))}
         </div>
 
-        <Card style={{ padding: "20px", marginBottom: 24 }}>
-          <h3 style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, marginBottom: 8 }}>Identity Upgrade</h3>
+        <Card style={{ padding: "22px", marginBottom: 24, background: "linear-gradient(180deg, rgba(77,162,255,0.05) 0%, var(--bg-card) 45%)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+            <h3 style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, margin: 0 }}>Identity Upgrade</h3>
+            <Badge variant={identityReadyCount === 5 ? "success" : "info"}>
+              {identityReadyCount}/5 steps complete
+            </Badge>
+          </div>
           <p style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 14 }}>
-            Base privilege is view-only with Google login. Upgrade identity to unlock issuer onboarding.
+            Base privilege is view-only with Google login. Complete all identity steps to unlock issuer onboarding.
           </p>
+          <div style={{ width: "100%", height: 7, background: "var(--bg-subtle)", borderRadius: 99, overflow: "hidden", marginBottom: 14 }}>
+            <div style={{ width: `${(identityReadyCount / 5) * 100}%`, height: "100%", background: "linear-gradient(90deg, #4DA2FF, #97EFE9)", transition: "width 220ms ease" }} />
+          </div>
           <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Google connected</span>
-              <Badge variant="success" dot>Connected</Badge>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>zkLogin verified</span>
-              {identityLoading ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span> : zkloginAddress ? <Badge variant="success" dot>Verified</Badge> : <Badge variant="warning" dot>Required</Badge>}
-            </div>
+            {[
+              { label: "Google connected", status: "Connected", ok: true },
+              { label: "zkLogin verified", status: identityLoading ? "Checking..." : zkloginAddress ? "Verified" : "Required", ok: Boolean(zkloginAddress) && !identityLoading },
+              { label: "Wallet connected", status: connected ? "Connected" : "Required", ok: connected },
+              { label: "Wallet authenticated", status: connected && authenticated ? "Verified" : "Required", ok: connected && authenticated },
+              {
+                label: "Wallet bound",
+                status: identityLoading ? "Checking..." : walletBindMismatch ? "Different wallet" : boundToCurrentWallet ? "Bound" : "Required for issuer",
+                ok: boundToCurrentWallet && !identityLoading,
+              },
+            ].map((item) => (
+              <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg-card)" }}>
+                <span style={{ fontSize: 13, color: "var(--text-secondary)", fontWeight: 600 }}>{item.label}</span>
+                {item.status === "Checking..."
+                  ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span>
+                  : <Badge variant={item.ok ? "success" : "warning"} dot>{item.status}</Badge>}
+              </div>
+            ))}
             {!identityLoading && !zkloginAddress && (
               <Button variant="secondary" size="sm" onClick={() => { window.location.href = "/auth/zklogin?callbackUrl=/profile"; }} style={{ width: "fit-content" }}>
                 Verify zkLogin
               </Button>
             )}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>Wallet bound</span>
-              {identityLoading ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span> : walletBoundAddress ? <Badge variant="success" dot>Bound</Badge> : <Badge variant="warning" dot>Required for issuer</Badge>}
-            </div>
-            {!identityLoading && !walletBoundAddress && (
-              <Button variant="secondary" size="sm" loading={bindingWallet || authenticating} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
-                {authenticated ? "Bind current wallet" : "Authenticate and bind wallet"}
+            {!identityLoading && !boundToCurrentWallet && connected && !authenticated && (
+              <Button variant="secondary" size="sm" loading={authenticating} onClick={authenticateWallet} style={{ width: "fit-content" }}>
+                Authenticate wallet
               </Button>
+            )}
+            {!identityLoading && !boundToCurrentWallet && connected && authenticated && (
+              <Button variant="secondary" size="sm" loading={bindingWallet} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
+                Bind current wallet
+              </Button>
+            )}
+            {!identityLoading && !boundToCurrentWallet && !connected && (
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+                Connect a wallet from the navbar to continue.
+              </p>
+            )}
+            {!identityLoading && walletBindMismatch && (
+              <div style={{ border: "1px solid #fde68a", background: "var(--gold-subtle)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
+                <p style={{ fontSize: 12, color: "var(--gold)", margin: 0, fontWeight: 700 }}>
+                  Bound wallet and connected wallet are different.
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                  <div style={{ border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px", background: "#fff8dc" }}>
+                    <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>Bound</p>
+                    <p style={{ fontSize: 12, fontFamily: "var(--font-mono)", margin: "4px 0 0", color: "var(--text-primary)" }}>{maskedBoundAddress ?? "Unknown"}</p>
+                  </div>
+                  <div style={{ border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px", background: "#fff8dc" }}>
+                    <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>Connected</p>
+                    <p style={{ fontSize: 12, fontFamily: "var(--font-mono)", margin: "4px 0 0", color: "var(--text-primary)" }}>{maskedConnectedAddress ?? "Unknown"}</p>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </Card>

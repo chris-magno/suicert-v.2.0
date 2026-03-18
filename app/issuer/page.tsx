@@ -7,12 +7,13 @@ import type { IssuerVerificationResult } from "@/lib/ai";
 import EventCard from "@/components/events/EventCard";
 import type { CertEvent, Issuer } from "@/types";
 import { useWalletSession } from "@/lib/wallet/context";
+import { sameSuiAddress } from "@/lib/wallet/address";
 import { useToast } from "@/components/ui/ToastProvider";
 
 type Tab = "overview" | "apply" | "events" | "create";
 
 export default function IssuerPage() {
-  const { authenticated, authenticating, authenticate } = useWalletSession();
+  const { session, connected, authenticated, authenticating, authenticate } = useWalletSession();
   const { toast } = useToast();
   const [tab, setTab]               = useState<Tab>("overview");
   const [form, setForm]             = useState({ name: "", organization: "", email: "", website: "", description: "" });
@@ -30,6 +31,19 @@ export default function IssuerPage() {
   const [walletBoundAddress, setWalletBoundAddress] = useState<string | null>(null);
   const [identityLoading, setIdentityLoading] = useState(true);
   const [bindingWallet, setBindingWallet] = useState(false);
+  const currentWalletAddress = session?.address ?? null;
+  const walletBindMismatch = Boolean(
+    connected && currentWalletAddress && walletBoundAddress && !sameSuiAddress(walletBoundAddress, currentWalletAddress)
+  );
+  const boundToCurrentWallet = Boolean(
+    walletBoundAddress && (!connected || !currentWalletAddress || sameSuiAddress(walletBoundAddress, currentWalletAddress))
+  );
+  const maskedBoundAddress = walletBoundAddress
+    ? `${walletBoundAddress.slice(0, 6)}...${walletBoundAddress.slice(-4)}`
+    : null;
+  const maskedConnectedAddress = currentWalletAddress
+    ? `${currentWalletAddress.slice(0, 6)}...${currentWalletAddress.slice(-4)}`
+    : null;
 
   // Load current user's issuer profile and events
   useEffect(() => {
@@ -72,7 +86,7 @@ export default function IssuerPage() {
       return;
     }
 
-    if (!walletBoundAddress) {
+    if (!boundToCurrentWallet) {
       toast({
         title: "Wallet bind required",
         description: "Bind your authenticated wallet before applying as issuer.",
@@ -117,16 +131,22 @@ export default function IssuerPage() {
   async function bindWalletToAccount() {
     setBindingWallet(true);
     try {
+      if (!connected) {
+        toast({
+          title: "Wallet connection required",
+          description: "Connect your wallet from the navbar first.",
+          variant: "warning",
+        });
+        return;
+      }
+
       if (!authenticated) {
-        const ok = await authenticate();
-        if (!ok) {
-          toast({
-            title: "Wallet authentication required",
-            description: "Please sign the wallet challenge first.",
-            variant: "warning",
-          });
-          return;
-        }
+        toast({
+          title: "Wallet authentication required",
+          description: "Authenticate wallet first, then bind.",
+          variant: "warning",
+        });
+        return;
       }
 
       const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
@@ -148,6 +168,42 @@ export default function IssuerPage() {
     } finally {
       setBindingWallet(false);
     }
+  }
+
+  async function authenticateWallet() {
+    if (!connected) {
+      toast({
+        title: "Wallet connection required",
+        description: "Connect your wallet from the navbar first.",
+        variant: "warning",
+      });
+      return;
+    }
+
+    if (authenticated) {
+      toast({
+        title: "Wallet already authenticated",
+        description: "You can bind this wallet to your account now.",
+        variant: "info",
+      });
+      return;
+    }
+
+    const ok = await authenticate();
+    if (ok) {
+      toast({
+        title: "Wallet authenticated",
+        description: "Signature verified. You can now bind your wallet.",
+        variant: "success",
+      });
+      return;
+    }
+
+    toast({
+      title: "Wallet authentication required",
+      description: "Please sign the wallet challenge to continue.",
+      variant: "warning",
+    });
   }
 
   async function submitOnChainProof() {
@@ -385,13 +441,54 @@ export default function IssuerPage() {
                     </Button>
                   )}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Wallet bind</p>
-                    {identityLoading ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Checking...</span> : walletBoundAddress ? <Badge variant="success" dot>Bound</Badge> : <Badge variant="warning" dot>Required</Badge>}
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Wallet connected</p>
+                    <Badge variant={connected ? "success" : "warning"} dot>{connected ? "Connected" : "Required"}</Badge>
                   </div>
-                  {!identityLoading && !walletBoundAddress && (
-                    <Button variant="secondary" size="sm" loading={bindingWallet || authenticating} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
-                      {authenticated ? "Bind current wallet" : "Authenticate and bind wallet"}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Wallet authenticated</p>
+                    <Badge variant={connected && authenticated ? "success" : "warning"} dot>{connected && authenticated ? "Verified" : "Required"}</Badge>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>Wallet bind</p>
+                    {identityLoading
+                      ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Checking...</span>
+                      : walletBindMismatch
+                        ? <Badge variant="warning" dot>Different wallet</Badge>
+                        : boundToCurrentWallet
+                          ? <Badge variant="success" dot>Bound</Badge>
+                          : <Badge variant="warning" dot>Required</Badge>}
+                  </div>
+                  {!identityLoading && !boundToCurrentWallet && connected && !authenticated && (
+                    <Button variant="secondary" size="sm" loading={authenticating} onClick={authenticateWallet} style={{ width: "fit-content" }}>
+                      Authenticate wallet
                     </Button>
+                  )}
+                  {!identityLoading && !boundToCurrentWallet && connected && authenticated && (
+                    <Button variant="secondary" size="sm" loading={bindingWallet} onClick={bindWalletToAccount} style={{ width: "fit-content" }}>
+                      Bind current wallet
+                    </Button>
+                  )}
+                  {!identityLoading && !boundToCurrentWallet && !connected && (
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
+                      Connect a wallet from the navbar to continue.
+                    </p>
+                  )}
+                  {!identityLoading && walletBindMismatch && (
+                    <div style={{ border: "1px solid #fde68a", background: "var(--gold-subtle)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
+                      <p style={{ fontSize: 11, color: "var(--gold)", margin: 0, fontWeight: 700 }}>
+                        Bound wallet and connected wallet are different.
+                      </p>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                        <div style={{ border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px", background: "#fff8dc" }}>
+                          <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>Bound</p>
+                          <p style={{ fontSize: 12, fontFamily: "var(--font-mono)", margin: "4px 0 0", color: "var(--text-primary)" }}>{maskedBoundAddress ?? "Unknown"}</p>
+                        </div>
+                        <div style={{ border: "1px solid #fcd34d", borderRadius: 8, padding: "8px 10px", background: "#fff8dc" }}>
+                          <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>Connected</p>
+                          <p style={{ fontSize: 12, fontFamily: "var(--font-mono)", margin: "4px 0 0", color: "var(--text-primary)" }}>{maskedConnectedAddress ?? "Unknown"}</p>
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
 
@@ -403,7 +500,7 @@ export default function IssuerPage() {
                   <Input label="Email" type="email" placeholder="maria@yourorg.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} error={errors.email} hint="Use an organizational email for higher trust score" />
                   <Input label="Website (optional)" placeholder="https://yourorg.com" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} />
                   <Textarea label="Organization Description" placeholder="Describe your organization and why you want to issue certificates (min. 50 characters)..." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} error={errors.description} rows={5} />
-                  <Button variant="sui" size="lg" loading={submitting} disabled={!zkloginAddress || !walletBoundAddress || identityLoading} onClick={handleApply} icon={<Shield size={16} />} style={{ width: "100%", justifyContent: "center" }}>
+                  <Button variant="sui" size="lg" loading={submitting} disabled={!zkloginAddress || !boundToCurrentWallet || identityLoading} onClick={handleApply} icon={<Shield size={16} />} style={{ width: "100%", justifyContent: "center" }}>
                     {submitting ? "Submitting & running AI check..." : "Submit Application"}
                   </Button>
                 </div>
