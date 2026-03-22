@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
-import { createAuthAuditLog, getUserIdentityByUserId, upsertUserIdentity } from "@/lib/supabase";
+import {
+  clearUserIdentityZkloginAddress,
+  createAuthAuditLog,
+  getUserIdentityByUserId,
+  getUserIdentityByZkloginAddress,
+  upsertUserIdentity,
+} from "@/lib/supabase";
 import { normalizeSuiAddress, sameSuiAddress } from "@/lib/wallet/address";
 import { getZkLoginVerifier } from "@/lib/zklogin/verifier";
 
@@ -87,6 +93,14 @@ function classifyVerifyPersistenceError(error: unknown): { status: number; reaso
     status: 500,
     reason: raw || "Unable to persist zkLogin verification result",
   };
+}
+
+function isZkloginUniqueConflict(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = raw.toLowerCase();
+
+  return normalized.includes("user_identities_zklogin_address_uniq")
+    || (normalized.includes("duplicate") && normalized.includes("zklogin_address"));
 }
 
 export async function GET() {
@@ -236,11 +250,40 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const identity = await upsertUserIdentity({
-      userId,
-      authProvider: "zklogin",
-      zkloginAddress: verifiedAddress,
-    });
+    let identity;
+    try {
+      identity = await upsertUserIdentity({
+        userId,
+        authProvider: "zklogin",
+        zkloginAddress: verifiedAddress,
+      });
+    } catch (error) {
+      if (!isZkloginUniqueConflict(error)) throw error;
+
+      const existingOwner = await getUserIdentityByZkloginAddress(verifiedAddress).catch(() => null);
+      if (!existingOwner?.userId || existingOwner.userId === userId) {
+        throw error;
+      }
+
+      // Credential-first reconciliation: if proof is valid, rebind that zkLogin address to this signed-in user.
+      await clearUserIdentityZkloginAddress(existingOwner.userId);
+      identity = await upsertUserIdentity({
+        userId,
+        authProvider: "zklogin",
+        zkloginAddress: verifiedAddress,
+      });
+
+      await auditSafely({
+        userId,
+        authProvider: "zklogin",
+        walletAddress: verifiedAddress,
+        event: "zklogin_verify_relinked_existing_credential",
+        details: {
+          requestId: parsed.data.requestId,
+          previousUserId: existingOwner.userId,
+        },
+      });
+    }
 
     await auditSafely({
       userId,

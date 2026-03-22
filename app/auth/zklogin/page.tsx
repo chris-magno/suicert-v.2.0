@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -16,8 +16,54 @@ export default function ZkLoginPage() {
   const [proofSignature, setProofSignature] = useState("");
   const [proofInputsRaw, setProofInputsRaw] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checkingLinked, setCheckingLinked] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function checkExistingLink() {
+      try {
+        const sessionRes = await fetch("/api/auth/session", { cache: "no-store" }).catch(() => null);
+        if (!active) return;
+
+        if (sessionRes?.ok) {
+          const sessionBody = await sessionRes.json().catch(() => null) as { zkloginAddress?: string | null } | null;
+          if (sessionBody?.zkloginAddress) {
+            window.location.href = callbackUrl;
+            return;
+          }
+        }
+
+        const res = await fetch("/api/auth/zklogin/verify", { cache: "no-store" }).catch(() => null);
+        if (!active) return;
+
+        if (!res?.ok) {
+          setCheckingLinked(false);
+          return;
+        }
+
+        const body = await res.json().catch(() => null) as { identity?: { zkloginAddress?: string | null } } | null;
+        const linkedAddress = body?.identity?.zkloginAddress;
+
+        if (linkedAddress) {
+          window.location.href = callbackUrl;
+          return;
+        }
+
+        setCheckingLinked(false);
+      } catch {
+        if (active) setCheckingLinked(false);
+      }
+    }
+
+    checkExistingLink();
+
+    return () => {
+      active = false;
+    };
+  }, [callbackUrl]);
 
   async function handleStartGoogleZkLogin() {
     setAutoLoading(true);
@@ -142,6 +188,12 @@ export default function ZkLoginPage() {
         <p style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
           Start automated zkLogin proof generation with Google and let SUICERT submit to verifier for you.
         </p>
+
+        {checkingLinked && (
+          <p style={{ color: "var(--text-muted)", fontSize: 12, lineHeight: 1.6, marginBottom: 14 }}>
+            Checking existing zkLogin link for this account...
+          </p>
+        )}
 
         <button
           onClick={handleStartGoogleZkLogin}

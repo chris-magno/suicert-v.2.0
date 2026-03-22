@@ -31,6 +31,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       let provider = typeof token.authProvider === "string" ? token.authProvider : "google";
       let zkloginAddress = typeof token.zkloginAddress === "string" ? token.zkloginAddress : undefined;
 
+      // Keep Google profile fields stable even when downstream identity calls fail.
+      const tokenName = typeof token.name === "string" ? token.name : undefined;
+      const tokenImage = typeof token.picture === "string" ? token.picture : undefined;
+
       if (token.sub) {
         const identity = await getUserIdentityByUserId(token.sub).catch(() => null);
         if (identity?.authProvider) provider = identity.authProvider;
@@ -39,6 +43,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
       if (session.user && token.sub) {
         (session.user as typeof session.user & { id: string }).id = token.sub;
+        if (!session.user.name && tokenName) {
+          session.user.name = tokenName;
+        }
+        if (!session.user.image && tokenImage) {
+          session.user.image = tokenImage;
+        }
       }
       (session as typeof session & { zkloginAddress?: string }).zkloginAddress = zkloginAddress;
       (session as typeof session & { authProvider?: string }).authProvider =

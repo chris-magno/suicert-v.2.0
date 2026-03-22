@@ -3,26 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { IssuerApplicationSchema } from "@/lib/validators";
 import { verifyIssuer } from "@/lib/ai";
 import { createIssuer, getIssuers, updateIssuerStatus, getIssuerByWallet, isWalletBoundToUser } from "@/lib/supabase";
-import { auth } from "@/lib/auth";
-import { getVerifiedWalletSession, isAdminWalletSession } from "@/lib/wallet/server-auth";
+import { isAdminWalletSession } from "@/lib/wallet/server-auth";
+import { requireSuiCertWriteGates } from "@/lib/auth/gates";
 
 export async function POST(req: NextRequest) {
   try {
-    const session = await auth();
-    const user = session?.user as { id?: string; email?: string } | undefined;
-    if (!user?.id || !user?.email) {
-      return NextResponse.json({ error: "Google session required" }, { status: 401 });
-    }
+    const gates = await requireSuiCertWriteGates(req, { requireFreshSignature: true });
+    if (!gates.ok) return gates.response;
 
-    const verifiedWalletSession = await getVerifiedWalletSession(req);
-    if (!verifiedWalletSession?.address) {
-      return NextResponse.json({
-        error: "Verified wallet session required for issuer onboarding",
-        code: "WALLET_AUTH_REQUIRED",
-      }, { status: 401 });
-    }
-
-    const walletBound = await isWalletBoundToUser(user.id, verifiedWalletSession.address).catch(() => false);
+    const walletBound = await isWalletBoundToUser(gates.context.userId, gates.context.walletAddress).catch(() => false);
     if (!walletBound) {
       return NextResponse.json({
         error: "Wallet must be bound to your account before applying as issuer",
@@ -38,7 +27,7 @@ export async function POST(req: NextRequest) {
     const data     = result.data;
     const aiResult = await verifyIssuer(data);
 
-    const walletAddress = verifiedWalletSession.address;
+    const walletAddress = gates.context.walletAddress;
 
     if (walletAddress) {
       const existing = await getIssuerByWallet(walletAddress).catch(() => null);
@@ -49,7 +38,7 @@ export async function POST(req: NextRequest) {
 
     const issuer = await createIssuer({
       walletAddress,
-      email: user.email, name: data.name, organization: data.organization,
+      email: gates.context.userEmail ?? data.email, name: data.name, organization: data.organization,
       website: data.website, description: data.description,
       aiScore: aiResult.score, aiSummary: aiResult.summary,
       status: "pending",

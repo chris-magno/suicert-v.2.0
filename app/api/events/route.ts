@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CreateEventSchema } from "@/lib/validators";
 import { getEvents, createEvent, updateEventStatus } from "@/lib/supabase";
+import { requireSuiCertWriteGates } from "@/lib/auth/gates";
 
 export async function GET(req: NextRequest) {
   try {
@@ -17,6 +18,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
+    const gates = await requireSuiCertWriteGates(req, { requireFreshSignature: true });
+    if (!gates.ok) return gates.response;
+
     const body   = await req.json();
     const result = CreateEventSchema.safeParse(body);
     if (!result.success) return NextResponse.json({ error: "Validation failed", details: result.error.flatten() }, { status: 400 });
@@ -30,6 +34,9 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
+    const gates = await requireSuiCertWriteGates(req, { requireFreshSignature: true });
+    if (!gates.ok) return gates.response;
+
     const { id, status } = await req.json();
     await updateEventStatus(id, status);
     return NextResponse.json({ success: true });

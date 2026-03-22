@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { Shield } from "lucide-react";
 import ConnectButton from "@/components/wallet/ConnectButton";
-import GoogleSignInButton from "@/components/wallet/GoogleSignInButton";
 import { useWalletSession } from "@/lib/wallet/context";
 import { sameSuiAddress } from "@/lib/wallet/address";
 import { useCurrentAccount } from "@mysten/dapp-kit";
@@ -13,10 +12,15 @@ import { useToast } from "@/components/ui/ToastProvider";
 
 interface AuthSessionResponse {
   user?: { email?: string | null; name?: string | null; image?: string | null };
+  zkloginAddress?: string | null;
 }
 
-interface ZkIdentityResponse {
-  identity?: { zkloginAddress?: string | null };
+interface IdentityStatusResponse {
+  ok?: boolean;
+  authenticated?: boolean;
+  user?: { email?: string | null; name?: string | null; image?: string | null };
+  identity?: { zkloginAddress?: string | null; walletBoundAddress?: string | null };
+  gates?: { l1ZkIdentity?: boolean };
 }
 
 interface WalletBindResponse {
@@ -41,37 +45,43 @@ export default function Navbar() {
 
     async function loadAuthStatus() {
       try {
-        const [sessionRes, zkRes, bindRes] = await Promise.all([
+        const [identityRes, sessionRes, bindRes] = await Promise.all([
+          fetch("/api/auth/identity/status", { cache: "no-store" }).catch(() => null),
           fetch("/api/auth/session", { cache: "no-store" }).catch(() => null),
-          fetch("/api/auth/zklogin/verify", { cache: "no-store" }).catch(() => null),
           fetch("/api/auth/wallet/bind", { cache: "no-store" }).catch(() => null),
         ]);
 
         if (!active) return;
 
-        if (sessionRes?.ok) {
-          const sessionBody = await sessionRes.json() as AuthSessionResponse;
-          setGoogleConnected(Boolean(sessionBody?.user?.email));
-          setGoogleUserName(sessionBody?.user?.name ?? null);
-          setGoogleUserImage(sessionBody?.user?.image ?? null);
-        } else {
-          setGoogleConnected(false);
-          setGoogleUserName(null);
-          setGoogleUserImage(null);
+        if (identityRes?.ok) {
+          const identityBody = await identityRes.json() as IdentityStatusResponse;
+          setGoogleConnected(Boolean(identityBody?.user?.email));
+          if (identityBody?.user?.name) setGoogleUserName(identityBody.user.name);
+          if (identityBody?.user?.image) setGoogleUserImage(identityBody.user.image);
+
+          const linked = Boolean(identityBody?.identity?.zkloginAddress)
+            || Boolean(identityBody?.gates?.l1ZkIdentity);
+          setZkloginVerified(linked);
+          setWalletBoundAddress(identityBody?.identity?.walletBoundAddress ?? null);
         }
 
-        if (zkRes?.ok) {
-          const zkBody = await zkRes.json() as ZkIdentityResponse;
-          setZkloginVerified(Boolean(zkBody?.identity?.zkloginAddress));
-        } else {
-          setZkloginVerified(false);
+        if (sessionRes?.ok) {
+          const sessionBody = await sessionRes.json() as AuthSessionResponse;
+          if (!identityRes?.ok) {
+            setGoogleConnected(Boolean(sessionBody?.user?.email));
+          }
+          if (sessionBody?.user?.name) setGoogleUserName(sessionBody.user.name);
+          if (sessionBody?.user?.image) setGoogleUserImage(sessionBody.user.image);
+
+          // Fast restore path: session already includes linked zkloginAddress.
+          if (sessionBody?.zkloginAddress) {
+            setZkloginVerified(true);
+          }
         }
 
         if (bindRes?.ok) {
           const bindBody = await bindRes.json() as WalletBindResponse;
           setWalletBoundAddress(bindBody?.walletBoundAddress ?? null);
-        } else {
-          setWalletBoundAddress(null);
         }
       } finally {
         if (active) setStatusLoading(false);
@@ -90,6 +100,7 @@ export default function Navbar() {
     ...(isIssuer ? [{ href: "/issuer",  label: "Issuer Portal" }] : []),
     ...(isAdmin  ? [{ href: "/admin",   label: "Admin" }]         : []),
   ];
+  const walletConnected = Boolean(account?.address);
   const walletBindMatchesCurrent = account?.address
     ? sameSuiAddress(walletBoundAddress, account.address)
     : Boolean(walletBoundAddress);
@@ -99,6 +110,60 @@ export default function Navbar() {
   const maskedConnectedAddress = account?.address
     ? `${account.address.slice(0, 6)}...${account.address.slice(-4)}`
     : null;
+
+  const onboarding = (() => {
+    if (statusLoading) {
+      return {
+        caption: "Checking identity gates...",
+        label: "Loading",
+        href: "/profile",
+        tone: "neutral" as const,
+      };
+    }
+
+    if (!googleConnected) {
+      return {
+        caption: "Start here",
+        label: "1) Sign in with Google zkLogin",
+        href: "/auth/signin?callbackUrl=/dashboard",
+        tone: "primary" as const,
+      };
+    }
+
+    if (!zkloginVerified) {
+      return {
+        caption: "Next step",
+        label: "2) Complete zkLogin verification",
+        href: "/auth/zklogin?callbackUrl=/dashboard",
+        tone: "warning" as const,
+      };
+    }
+
+    if (!walletConnected || !authenticated) {
+      return {
+        caption: "Next step",
+        label: "3) Sign wallet challenge",
+        href: "/profile",
+        tone: "warning" as const,
+      };
+    }
+
+    if (!walletBindMatchesCurrent) {
+      return {
+        caption: "Next step",
+        label: "4) Bind current wallet",
+        href: "/issuer?tab=apply",
+        tone: "warning" as const,
+      };
+    }
+
+    return {
+      caption: "Ready",
+      label: "All gates passed - open issuer flow",
+      href: "/issuer",
+      tone: "success" as const,
+    };
+  })();
 
   useEffect(() => {
     if (!account?.address || !walletBoundAddress) {
@@ -158,30 +223,64 @@ export default function Navbar() {
           ))}
         </div>
 
-        {/* Right: wallet + google */}
+        {/* Right: step-based onboarding + wallet */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                {onboarding.caption}
+              </span>
+              <Link
+                href={onboarding.href}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "5px 10px",
+                  borderRadius: 99,
+                  textDecoration: "none",
+                  border: "1px solid var(--border)",
+                  background: onboarding.tone === "primary"
+                    ? "linear-gradient(135deg, #4DA2FF, #097EED)"
+                    : "var(--bg-card)",
+                  color: onboarding.tone === "primary"
+                    ? "white"
+                    : onboarding.tone === "success"
+                      ? "#047857"
+                      : onboarding.tone === "warning"
+                        ? "#b45309"
+                        : "var(--text-muted)",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+                title={onboarding.label}
+              >
+                {onboarding.label}
+              </Link>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {[
               {
-                label: "Google",
-                ok: googleConnected,
-                loading: statusLoading,
-                href: "/auth/signin",
-              },
-              {
-                label: "zkLogin",
+                label: "L1 zkLogin",
                 ok: zkloginVerified,
                 loading: statusLoading,
                 href: "/auth/zklogin?callbackUrl=/dashboard",
               },
               {
-                label: "Wallet Auth",
+                label: "L2 Wallet",
+                ok: walletConnected,
+                loading: false,
+                href: "/profile",
+              },
+              {
+                label: "L3 Signature",
                 ok: authenticated,
                 loading: false,
                 href: "/profile",
               },
               {
-                label: "Wallet Bind",
+                label: "L4 Execute",
                 ok: walletBindMatchesCurrent,
                 loading: statusLoading,
                 href: "/issuer?tab=apply",
@@ -216,7 +315,7 @@ export default function Navbar() {
               </Link>
             ))}
           </div>
-          {!googleConnected && <GoogleSignInButton />}
+          </div>
           {googleConnected && (
             <div style={{ position: "relative" }}>
               <button

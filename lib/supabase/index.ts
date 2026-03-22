@@ -1,6 +1,7 @@
 // lib/supabase/index.ts — Real Supabase client (lazy initialized)
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { CertEvent, Issuer, Certificate, Attendance, UserIdentity, PublicProfile } from "@/types";
+import { getSuiAddressVariants } from "@/lib/wallet/address";
 
 // Lazy clients — created only when first used (not at build time)
 let _supabase: SupabaseClient | null = null;
@@ -41,6 +42,37 @@ export async function getUserIdentityByUserId(userId: string): Promise<UserIdent
 
   if (error) throw new Error(error.message);
   return data ? mapUserIdentity(data) : null;
+}
+
+export async function getUserIdentityByZkloginAddress(zkloginAddress: string): Promise<UserIdentity | null> {
+  const variants = getSuiAddressVariants(zkloginAddress);
+  const candidates = variants.length > 0
+    ? variants.map((value) => value.trim().toLowerCase())
+    : [zkloginAddress.trim().toLowerCase()];
+
+  if (candidates.length === 0 || !candidates[0]) return null;
+
+  const uniqueCandidates = Array.from(new Set(candidates));
+  const filter = uniqueCandidates.map((value) => `zklogin_address.eq.${value}`).join(",");
+
+  const { data, error } = await getSupabaseAdmin()
+    .from("user_identities")
+    .select("*")
+    .or(filter)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data ? mapUserIdentity(data) : null;
+}
+
+export async function clearUserIdentityZkloginAddress(userId: string): Promise<void> {
+  const { error } = await getSupabaseAdmin()
+    .from("user_identities")
+    .update({ zklogin_address: null })
+    .eq("user_id", userId);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function upsertUserIdentity(identity: {

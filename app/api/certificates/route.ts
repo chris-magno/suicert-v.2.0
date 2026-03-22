@@ -3,9 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { mintSoulboundToken } from "@/lib/sui";
 import { generateAttendanceSummary } from "@/lib/ai";
 import { getAttendance, getEvent, createCertificate, getCertificate, getCertificatesByEmail } from "@/lib/supabase";
+import { requireSuiCertWriteGates } from "@/lib/auth/gates";
 
 export async function POST(req: NextRequest) {
   try {
+    const gates = await requireSuiCertWriteGates(req, { requireFreshSignature: true });
+    if (!gates.ok) return gates.response;
+
     const { attendanceId, walletAddress } = await req.json();
     const attendance = await getAttendance(attendanceId);
     if (!attendance) return NextResponse.json({ error: "Attendance record not found" }, { status: 404 });
