@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
+import { decodeJwt, generateNonce } from "@mysten/sui/zklogin";
+import { Ed25519PublicKey } from "@mysten/sui/keypairs/ed25519";
 import {
-  clearUserIdentityZkloginAddress,
   createAuthAuditLog,
   getUserIdentityByUserId,
   getUserIdentityByZkloginAddress,
@@ -23,9 +24,70 @@ const ZkLoginProofEnvelopeSchema = z.object({
 
 const VerifyZkProofSchema = z.object({
   proof: ZkLoginProofEnvelopeSchema,
+  binding: z
+    .object({
+      nonce: z.string().min(1),
+      jwtRandomness: z.string().regex(/^\d+$/),
+      maxEpoch: z.union([z.string().regex(/^\d+$/), z.number().int().nonnegative()]),
+      ephemeralPublicKeyRaw: z.string().min(1),
+    })
+    .strict(),
   expectedAddress: z.string().optional(),
   requestId: z.string().optional(),
 });
+
+const JWT_CLAIMS_SCHEMA = z
+  .object({
+    iss: z.string().min(1),
+    aud: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+    nonce: z.string().min(1),
+    exp: z.number().int().optional(),
+    iat: z.number().int().optional(),
+  })
+  .passthrough();
+
+const TRUSTED_GOOGLE_ISSUERS = new Set([
+  "accounts.google.com",
+  "https://accounts.google.com",
+]);
+
+function resolveAllowedGoogleAudiences(): string[] {
+  const values = [
+    process.env.NEXT_PUBLIC_ZKLOGIN_GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.AUTH_GOOGLE_ID,
+  ]
+    .flatMap((value) => (value ?? "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(values));
+}
+
+function parseEpoch(value: string | number | undefined): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Number.parseInt(value, 10);
+  return Number.NaN;
+}
+
+function toAudienceList(aud: string | string[]): string[] {
+  return Array.isArray(aud) ? aud : [aud];
+}
+
+function validateJwtLifetime(claims: z.infer<typeof JWT_CLAIMS_SCHEMA>): string | null {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const allowedSkewSeconds = 120;
+
+  if (typeof claims.exp === "number" && claims.exp + allowedSkewSeconds < nowSeconds) {
+    return "id_token is expired";
+  }
+
+  if (typeof claims.iat === "number" && claims.iat - allowedSkewSeconds > nowSeconds) {
+    return "id_token has invalid issued-at timestamp";
+  }
+
+  return null;
+}
 
 async function auditSafely(input: {
   userId?: string;
@@ -119,8 +181,8 @@ export async function GET() {
     verifier: {
       contractVersion: "v1",
       failClosed: true,
-      requiredFields: ["proof.bytes", "proof.signature"],
-      optionalFields: ["proof.idToken", "proof.address", "proof.maxEpoch", "proof.userSignature", "proof.proofInputs", "expectedAddress", "requestId"],
+      requiredFields: ["proof.bytes", "proof.signature", "proof.idToken", "binding.nonce", "binding.jwtRandomness", "binding.maxEpoch", "binding.ephemeralPublicKeyRaw"],
+      optionalFields: ["proof.address", "proof.maxEpoch", "proof.userSignature", "proof.proofInputs", "expectedAddress", "requestId"],
     },
   });
 }
@@ -153,6 +215,106 @@ export async function POST(req: NextRequest) {
       ? normalizeSuiAddress(parsed.data.expectedAddress)
       : null;
 
+    if (!parsed.data.proof.idToken) {
+      return NextResponse.json(
+        { error: "idToken is required for zkLogin verification" },
+        { status: 400 }
+      );
+    }
+
+    let decodedJwtPayload: unknown;
+    try {
+      decodedJwtPayload = decodeJwt(parsed.data.proof.idToken);
+    } catch {
+      return NextResponse.json(
+        { error: "Unable to decode idToken" },
+        { status: 400 }
+      );
+    }
+
+    const decodedClaimsResult = JWT_CLAIMS_SCHEMA.safeParse(decodedJwtPayload);
+    if (!decodedClaimsResult.success) {
+      return NextResponse.json(
+        { error: "idToken payload is invalid", details: decodedClaimsResult.error.flatten() },
+        { status: 400 }
+      );
+    }
+
+    const decodedClaims = decodedClaimsResult.data;
+    if (!TRUSTED_GOOGLE_ISSUERS.has(decodedClaims.iss)) {
+      return NextResponse.json(
+        { error: "Untrusted OAuth issuer in idToken" },
+        { status: 401 }
+      );
+    }
+
+    const audienceList = toAudienceList(decodedClaims.aud);
+    const allowedAudiences = resolveAllowedGoogleAudiences();
+    if (allowedAudiences.length > 0 && !audienceList.some((aud) => allowedAudiences.includes(aud))) {
+      return NextResponse.json(
+        { error: "idToken audience does not match configured Google client ID" },
+        { status: 401 }
+      );
+    }
+
+    const lifetimeReason = validateJwtLifetime(decodedClaims);
+    if (lifetimeReason) {
+      return NextResponse.json(
+        { error: lifetimeReason },
+        { status: 401 }
+      );
+    }
+
+    const bindingMaxEpoch = parseEpoch(parsed.data.binding.maxEpoch);
+    const proofMaxEpoch = parseEpoch(parsed.data.proof.maxEpoch);
+    if (!Number.isFinite(bindingMaxEpoch)) {
+      return NextResponse.json(
+        { error: "Invalid binding.maxEpoch" },
+        { status: 400 }
+      );
+    }
+
+    if (Number.isFinite(proofMaxEpoch) && proofMaxEpoch !== bindingMaxEpoch) {
+      return NextResponse.json(
+        { error: "proof.maxEpoch does not match binding.maxEpoch" },
+        { status: 400 }
+      );
+    }
+
+    let computedNonce: string;
+    try {
+      const ephemeralPublicKey = new Ed25519PublicKey(parsed.data.binding.ephemeralPublicKeyRaw);
+      computedNonce = generateNonce(ephemeralPublicKey, bindingMaxEpoch, parsed.data.binding.jwtRandomness);
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid ephemeralPublicKeyRaw for nonce binding" },
+        { status: 400 }
+      );
+    }
+
+    if (parsed.data.binding.nonce !== computedNonce || decodedClaims.nonce !== computedNonce) {
+      await auditSafely({
+        userId,
+        authProvider: "zklogin",
+        event: "zklogin_verify_nonce_binding_failed",
+        details: {
+          requestId: parsed.data.requestId,
+          tokenNonce: decodedClaims.nonce,
+          providedNonce: parsed.data.binding.nonce,
+          computedNonce,
+        },
+      });
+
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INVALID_PROOF",
+          reason: "JWT nonce does not match ephemeral key binding",
+        },
+        { status: 401 }
+      );
+    }
+
     await auditSafely({
       userId,
       authProvider: "zklogin",
@@ -162,6 +324,8 @@ export async function POST(req: NextRequest) {
         requestId: parsed.data.requestId,
         hasAddressHint: Boolean(parsed.data.proof.address),
         hasProofInputs: Boolean(parsed.data.proof.proofInputs),
+          issuer: decodedClaims.iss,
+          audience: audienceList,
       },
     });
 
@@ -252,10 +416,18 @@ export async function POST(req: NextRequest) {
 
     let identity;
     try {
+      const maxEpochRaw = parsed.data.proof.maxEpoch;
+      const parsedMaxEpoch = typeof maxEpochRaw === "number"
+        ? maxEpochRaw
+        : typeof maxEpochRaw === "string"
+          ? Number.parseInt(maxEpochRaw, 10)
+          : bindingMaxEpoch;
+
       identity = await upsertUserIdentity({
         userId,
         authProvider: "zklogin",
         zkloginAddress: verifiedAddress,
+        zkMaxEpoch: Number.isFinite(parsedMaxEpoch) ? parsedMaxEpoch : undefined,
       });
     } catch (error) {
       if (!isZkloginUniqueConflict(error)) throw error;
@@ -265,24 +437,25 @@ export async function POST(req: NextRequest) {
         throw error;
       }
 
-      // Credential-first reconciliation: if proof is valid, rebind that zkLogin address to this signed-in user.
-      await clearUserIdentityZkloginAddress(existingOwner.userId);
-      identity = await upsertUserIdentity({
-        userId,
-        authProvider: "zklogin",
-        zkloginAddress: verifiedAddress,
-      });
-
       await auditSafely({
         userId,
         authProvider: "zklogin",
         walletAddress: verifiedAddress,
-        event: "zklogin_verify_relinked_existing_credential",
+        event: "zklogin_verify_rejected_existing_owner",
         details: {
           requestId: parsed.data.requestId,
-          previousUserId: existingOwner.userId,
+          ownerUserId: existingOwner.userId,
         },
       });
+
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "ZKLOGIN_ALREADY_LINKED",
+          reason: "This zkLogin identity is already linked to another account.",
+        },
+        { status: 409 }
+      );
     }
 
     await auditSafely({

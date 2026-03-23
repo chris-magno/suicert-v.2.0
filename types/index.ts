@@ -101,7 +101,14 @@ export interface UserIdentity {
   userId: string;
   authProvider: "google" | "zklogin";
   zkloginAddress?: string;
+  zkMaxEpoch?: number;
   walletBoundAddress?: string;
+  walletBoundZkAddress?: string;
+  walletBoundAt?: string;
+  walletSignatureVerified?: boolean;
+  walletSignature?: string;
+  walletVerifiedAt?: string;
+  walletBindingSkippedAt?: string;
   lastWalletVerifiedAt?: string;
   createdAt: string;
   updatedAt: string;

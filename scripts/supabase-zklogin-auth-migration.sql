@@ -10,11 +10,27 @@ create table if not exists user_identities (
   auth_provider text not null default 'google'
     check (auth_provider in ('google', 'zklogin')),
   zklogin_address text,
+  zk_max_epoch bigint,
   wallet_bound_address text,
+  wallet_bound_zk_address text,
+  wallet_bound_at timestamptz,
+  wallet_signature_verified boolean,
+  wallet_signature text,
+  wallet_verified_at timestamptz,
+  wallet_binding_skipped_at timestamptz,
   last_wallet_verified_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table if exists user_identities
+  add column if not exists zk_max_epoch bigint,
+  add column if not exists wallet_bound_zk_address text,
+  add column if not exists wallet_bound_at timestamptz,
+  add column if not exists wallet_signature_verified boolean,
+  add column if not exists wallet_signature text,
+  add column if not exists wallet_verified_at timestamptz,
+  add column if not exists wallet_binding_skipped_at timestamptz;
 
 create unique index if not exists user_identities_zklogin_address_uniq
   on user_identities (lower(zklogin_address))

@@ -9,7 +9,9 @@ interface PendingFlow {
   state: string;
   callbackUrl: string;
   maxEpoch: number;
+  nonce: string;
   jwtRandomness: string;
+  ephemeralPublicKeyRaw?: string;
   ephemeralPublicKey?: string;
   extendedEphemeralPublicKey: string;
   ephemeralSecretKey: string;
@@ -19,15 +21,15 @@ interface PendingFlow {
 type Stage =
   | "idle"
   | "parsing"
-  | "building-proof"
-  | "assembling-signature"
-  | "submitting-verifier"
+  | "requesting-proof"
+  | "computing-proof"
+  | "verifying-proof"
   | "success"
   | "error";
 
 function getFlow(state: string): PendingFlow | null {
   try {
-    const raw = sessionStorage.getItem(`zklogin:flow:${state}`);
+    const raw = localStorage.getItem(`zklogin:flow:${state}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PendingFlow;
     if (!parsed.state || !parsed.ephemeralSecretKey) return null;
@@ -38,7 +40,7 @@ function getFlow(state: string): PendingFlow | null {
 }
 
 function clearFlow(state: string) {
-  sessionStorage.removeItem(`zklogin:flow:${state}`);
+  localStorage.removeItem(`zklogin:flow:${state}`);
 }
 
 export default function ZkLoginCallbackPage() {
@@ -52,12 +54,12 @@ export default function ZkLoginCallbackPage() {
     switch (stage) {
       case "parsing":
         return "Parsing Google callback";
-      case "building-proof":
-        return "Building zk proof";
-      case "assembling-signature":
-        return "Assembling zkLogin signature";
-      case "submitting-verifier":
-        return "Submitting to verifier";
+      case "requesting-proof":
+        return "Phase 1/3: Requesting proof";
+      case "computing-proof":
+        return "Phase 2/3: Computing proof locally";
+      case "verifying-proof":
+        return "Phase 3/3: Verifying with prover";
       case "success":
         return "Verification successful";
       case "error":
@@ -110,12 +112,25 @@ export default function ZkLoginCallbackPage() {
 
       setCallbackUrl(flow.callbackUrl || "/dashboard");
 
+      const derivedPublicKey = Ed25519Keypair.fromSecretKey(flow.ephemeralSecretKey).getPublicKey();
+      const ephemeralPublicKeyRaw = flow.ephemeralPublicKeyRaw || derivedPublicKey.toBase64();
+
       const ephemeralPublicKey = flow.ephemeralPublicKey
         ? flow.ephemeralPublicKey
-        : Ed25519Keypair.fromSecretKey(flow.ephemeralSecretKey).getPublicKey().toSuiPublicKey();
+        : derivedPublicKey.toSuiPublicKey();
 
-      setStage("building-proof");
-      setStatus("Calling server prover integration to build zk proof inputs...");
+      setStage("requesting-proof");
+      setStatus("Requesting zk proof input material from server...");
+
+      const saltRes = await fetch("/api/auth/zk-salt", { cache: "no-store" });
+      const saltBody = await saltRes.json().catch(() => ({}));
+      if (!saltRes.ok || !saltBody?.salt) {
+        if (!cancelled) {
+          setStage("error");
+          setError(saltBody?.error ?? "Unable to resolve deterministic zk salt");
+        }
+        return;
+      }
 
       const proofRes = await fetch("/api/auth/zklogin/proof", {
         method: "POST",
@@ -127,6 +142,7 @@ export default function ZkLoginCallbackPage() {
           ephemeralPublicKey,
           extendedEphemeralPublicKey: flow.extendedEphemeralPublicKey,
           keyClaimName: "sub",
+          userSalt: saltBody.salt,
         }),
       });
 
@@ -151,8 +167,8 @@ export default function ZkLoginCallbackPage() {
         return;
       }
 
-      setStage("assembling-signature");
-      setStatus("Signing challenge with ephemeral key and serializing zkLogin signature...");
+      setStage("computing-proof");
+      setStatus("Computing and serializing zkLogin signature locally...");
 
       const keypair = Ed25519Keypair.fromSecretKey(flow.ephemeralSecretKey);
       const signResult = await keypair.signPersonalMessage(
@@ -165,8 +181,8 @@ export default function ZkLoginCallbackPage() {
         userSignature: signResult.signature,
       });
 
-      setStage("submitting-verifier");
-      setStatus("Submitting payload to /api/auth/zklogin/verify...");
+      setStage("verifying-proof");
+      setStatus("Submitting proof to verifier and linking identity...");
 
       const verifyRes = await fetch("/api/auth/zklogin/verify", {
         method: "POST",
@@ -179,6 +195,12 @@ export default function ZkLoginCallbackPage() {
             maxEpoch: String(flow.maxEpoch),
             userSignature: signResult.signature,
             proofInputs: proofBody.proofInputs,
+          },
+          binding: {
+            nonce: flow.nonce,
+            jwtRandomness: flow.jwtRandomness,
+            maxEpoch: flow.maxEpoch,
+            ephemeralPublicKeyRaw,
           },
           requestId: `zk-${Date.now()}-${state.slice(0, 8)}`,
         }),
@@ -201,12 +223,21 @@ export default function ZkLoginCallbackPage() {
       if (!cancelled) {
         setStage("success");
         setResultAddress(verifyBody?.zkloginAddress ?? proofBody.address ?? null);
-        setStatus("zkLogin verified and linked. Redirecting...");
+        setStatus("zkLogin verified and linked. Returning to wizard...");
       }
 
+      try {
+        sessionStorage.setItem("zklogin:last-result", JSON.stringify({
+          address: verifyBody?.zkloginAddress ?? proofBody.address ?? null,
+          verifiedAt: new Date().toISOString(),
+          callbackUrl: flow.callbackUrl || "/dashboard",
+        }));
+      } catch {}
+
       window.setTimeout(() => {
-        window.location.href = flow.callbackUrl || "/dashboard";
-      }, 850);
+        const next = `/auth/callback?callbackUrl=${encodeURIComponent(flow.callbackUrl || "/dashboard")}`;
+        window.location.href = next;
+      }, 700);
     }
 
     run().catch((cause) => {
@@ -224,7 +255,7 @@ export default function ZkLoginCallbackPage() {
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div style={{ width: "100%", maxWidth: 560, background: "var(--bg-card)", border: "1.5px solid var(--border)", borderRadius: "var(--radius-xl)", padding: 28 }}>
-        <h1 style={{ fontFamily: "var(--font-display)", fontSize: 28, fontWeight: 800, marginBottom: 10 }}>zkLogin Callback</h1>
+        <h1 style={{ fontFamily: "var(--font-display)", fontSize: 28, fontWeight: 800, marginBottom: 10 }}>zkLogin Proof Pipeline</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13, lineHeight: 1.6, marginBottom: 18 }}>
           {stageLabel}
         </p>

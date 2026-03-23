@@ -49,6 +49,33 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
 
   const refresh = () => setTick((t) => t + 1);
 
+  const revalidateWalletSession = useCallback(async () => {
+    if (!account?.address) {
+      setAuthenticated(false);
+      return;
+    }
+
+    const existingRes = await fetch("/api/wallet/session", {
+      cache: "no-store",
+      credentials: "include",
+    }).catch(() => null);
+
+    if (!existingRes?.ok) {
+      setAuthenticated(false);
+      return;
+    }
+
+    const existingBody = await existingRes.json().catch(() => null) as { session?: WalletSession | null } | null;
+    const existingSession = existingBody?.session;
+    const isSameWallet = sameSuiAddress(existingSession?.address, account.address);
+
+    setAuthenticated(Boolean(existingSession && isSameWallet));
+    if (existingSession && isSameWallet) {
+      setSession((prev) => ({ ...(prev ?? {}), ...existingSession } as WalletSession));
+      setAuthError(null);
+    }
+  }, [account?.address]);
+
   function mapAuthError(errorText: string | undefined, code: string | undefined): string {
     if (code === "RATE_LIMIT_RAW" || code === "RATE_LIMIT_SCOPED") {
       return "Too many authentication attempts. Please wait and try again.";
@@ -217,21 +244,7 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
         setSession(walletRoleSession);
 
         // Hydrate existing authenticated wallet session without prompting for a signature.
-        const existingRes = await fetch("/api/wallet/session", { cache: "no-store" });
-        if (!existingRes.ok) {
-          setAuthenticated(false);
-          return;
-        }
-
-        const existingBody = await existingRes.json();
-        const existingSession = existingBody?.session as WalletSession | null | undefined;
-        const isSameWallet = sameSuiAddress(existingSession?.address, account.address);
-        setAuthenticated(Boolean(existingSession && isSameWallet));
-        if (existingSession && isSameWallet) setAuthError(null);
-
-        if (existingSession && isSameWallet) {
-          setSession((prev) => ({ ...(prev ?? {}), ...existingSession } as WalletSession));
-        }
+        await revalidateWalletSession();
       })
       .catch(() => {
         const fallback: WalletSession = { address: account.address, role: "user" };
@@ -239,7 +252,29 @@ export function WalletSessionProvider({ children }: { children: ReactNode }) {
         setAuthenticated(false);
       })
       .finally(() => setLoading(false));
-  }, [account?.address, tick]);
+  }, [account?.address, tick, revalidateWalletSession]);
+
+  useEffect(() => {
+    function onWalletAuthCleared() {
+      setAuthenticated(false);
+      setAuthError(null);
+      setTick((t) => t + 1);
+    }
+
+    function onFocusRevalidate() {
+      void revalidateWalletSession();
+    }
+
+    window.addEventListener("suicert:wallet-auth-cleared", onWalletAuthCleared as EventListener);
+    window.addEventListener("focus", onFocusRevalidate);
+    document.addEventListener("visibilitychange", onFocusRevalidate);
+
+    return () => {
+      window.removeEventListener("suicert:wallet-auth-cleared", onWalletAuthCleared as EventListener);
+      window.removeEventListener("focus", onFocusRevalidate);
+      document.removeEventListener("visibilitychange", onFocusRevalidate);
+    };
+  }, [revalidateWalletSession]);
 
   const role = session?.role ?? "user";
 

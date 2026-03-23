@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getUserIdentityByUserId } from "@/lib/supabase";
 import { getVerifiedWalletSession } from "@/lib/wallet/server-auth";
-import { sameSuiAddress } from "@/lib/wallet/address";
+import { resolveCurrentStep } from "@/lib/auth/resolve-current-step";
 
 function parseActionMaxAgeSeconds(): number {
   const value = Number.parseInt(process.env.WALLET_ACTION_MAX_AGE_SECONDS ?? "300", 10);
@@ -29,17 +29,20 @@ export async function GET(req: NextRequest) {
   const maxAgeSeconds = parseActionMaxAgeSeconds();
   const verifiedAtMs = walletSession?.verifiedAt ? new Date(walletSession.verifiedAt).getTime() : Number.NaN;
   const ageSeconds = Number.isFinite(verifiedAtMs) ? Math.floor((Date.now() - verifiedAtMs) / 1000) : null;
+  const stepState = await resolveCurrentStep(user.id).catch(() => ({
+    step: "layer2_zklogin" as const,
+    currentEpoch: null,
+    zkMaxEpoch: null,
+    zkEpochValid: false,
+    canSkipWallet: true,
+  }));
 
-  const zkAddress = identity?.zkloginAddress ?? null;
-  const walletAddress = walletSession?.address ?? null;
-  const l1ZkIdentity = Boolean(zkAddress);
-  const l2WalletMatch = Boolean(zkAddress && walletAddress && sameSuiAddress(zkAddress, walletAddress));
-  const l3SignatureFresh = Boolean(
-    l2WalletMatch &&
-    typeof ageSeconds === "number" &&
-    ageSeconds >= 0 &&
-    ageSeconds <= maxAgeSeconds
-  );
+  const l1ZkIdentity = Boolean(identity?.zkloginAddress && stepState.zkEpochValid);
+  const hasWallet = Boolean(identity?.walletBoundAddress);
+  const skippedWallet = Boolean(identity?.walletBindingSkippedAt);
+  const walletVerified = Boolean(identity?.walletSignatureVerified);
+  const l2WalletBound = Boolean(hasWallet || skippedWallet);
+  const l3SignatureFresh = Boolean(skippedWallet || (hasWallet && walletVerified));
 
   return NextResponse.json({
     ok: true,
@@ -52,8 +55,14 @@ export async function GET(req: NextRequest) {
     },
     identity: {
       authProvider: identity?.authProvider ?? "google",
-      zkloginAddress: zkAddress,
+      zkloginAddress: identity?.zkloginAddress ?? null,
+      zkMaxEpoch: identity?.zkMaxEpoch ?? null,
       walletBoundAddress: identity?.walletBoundAddress ?? null,
+      walletBoundZkAddress: identity?.walletBoundZkAddress ?? null,
+      walletBoundAt: identity?.walletBoundAt ?? null,
+      walletSignatureVerified: identity?.walletSignatureVerified ?? false,
+      walletVerifiedAt: identity?.walletVerifiedAt ?? null,
+      walletBindingSkippedAt: identity?.walletBindingSkippedAt ?? null,
       lastWalletVerifiedAt: identity?.lastWalletVerifiedAt ?? null,
     },
     walletSession: walletSession ? {
@@ -65,9 +74,17 @@ export async function GET(req: NextRequest) {
     } : null,
     gates: {
       l1ZkIdentity,
-      l2WalletMatch,
+      l2WalletMatch: l2WalletBound,
       l3SignatureFresh,
-      l4CanExecuteWrite: l1ZkIdentity && l2WalletMatch && l3SignatureFresh,
+      l4CanExecuteWrite: l1ZkIdentity && l2WalletBound && l3SignatureFresh,
+    },
+    flow: {
+      currentStep: stepState.step,
+      currentEpoch: stepState.currentEpoch,
+      zkMaxEpoch: stepState.zkMaxEpoch,
+      zkEpochValid: stepState.zkEpochValid,
+      canSkipWallet: stepState.canSkipWallet,
+      done: stepState.step === "done",
     },
     policy: {
       walletActionMaxAgeSeconds: maxAgeSeconds,

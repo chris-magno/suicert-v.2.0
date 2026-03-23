@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { Shield, CheckCircle2, Clock, AlertCircle, Plus, Award, Zap } from "lucide-react";
+import { useSignPersonalMessage } from "@mysten/dapp-kit";
 import Navbar from "@/components/layout/Navbar";
 import { Button, Card, Input, Textarea, Badge } from "@/components/ui";
 import type { IssuerVerificationResult } from "@/lib/ai";
@@ -15,7 +16,8 @@ import { useIdentityStatus } from "@/lib/auth/use-identity-status";
 type Tab = "overview" | "apply" | "events" | "create";
 
 export default function IssuerPage() {
-  const { session, connected, authenticated, authenticating, authenticate } = useWalletSession();
+  const { session, connected } = useWalletSession();
+  const { mutateAsync: signPersonalMessage } = useSignPersonalMessage();
   const { toast } = useToast();
   const [tab, setTab]               = useState<Tab>("overview");
   const [form, setForm]             = useState({ name: "", organization: "", email: "", website: "", description: "" });
@@ -30,13 +32,16 @@ export default function IssuerPage() {
   const [proofCapId, setProofCapId] = useState("");
   const [proofSubmitting, setProofSubmitting] = useState(false);
   const [bindingWallet, setBindingWallet] = useState(false);
+  const [verifyingSignature, setVerifyingSignature] = useState(false);
   const {
     loading: identityLoading,
     zkloginAddress,
     walletBoundAddress,
+    walletSignatureVerified,
     walletSessionAgeSeconds,
     walletActionMaxAgeSeconds,
     gates,
+    registration,
     refresh: refreshIdentity,
   } = useIdentityStatus();
   const currentWalletAddress = session?.address ?? null;
@@ -126,7 +131,7 @@ export default function IssuerPage() {
   async function bindWalletToAccount() {
     setBindingWallet(true);
     try {
-      if (!connected) {
+      if (!connected || !currentWalletAddress) {
         toast({
           title: "Wallet connection required",
           description: "Connect your wallet from the navbar first.",
@@ -135,23 +140,18 @@ export default function IssuerPage() {
         return;
       }
 
-      if (!authenticated) {
-        toast({
-          title: "Wallet authentication required",
-          description: "Authenticate wallet first, then bind.",
-          variant: "warning",
-        });
-        return;
-      }
-
-      const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
+      const res = await fetch("/api/auth/wallet/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ walletAddress: currentWalletAddress }),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? "Wallet bind failed");
 
       await refreshIdentity();
       toast({
         title: "Wallet bound",
-        description: "Wallet successfully linked to your account.",
+        description: `Sui address linked: ${currentWalletAddress}`,
         variant: "success",
       });
     } catch (err: unknown) {
@@ -165,8 +165,36 @@ export default function IssuerPage() {
     }
   }
 
+  async function skipWalletBinding() {
+    setBindingWallet(true);
+    try {
+      const res = await fetch("/api/auth/wallet/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "Unable to skip wallet binding");
+
+      await refreshIdentity();
+      toast({
+        title: "Wallet skipped",
+        description: "You can bind a wallet later from profile settings.",
+        variant: "info",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Unable to skip wallet",
+        description: err instanceof Error ? err.message : "Skip failed",
+        variant: "error",
+      });
+    } finally {
+      setBindingWallet(false);
+    }
+  }
+
   async function authenticateWallet() {
-    if (!connected) {
+    if (!connected || !currentWalletAddress) {
       toast({
         title: "Wallet connection required",
         description: "Connect your wallet from the navbar first.",
@@ -175,37 +203,80 @@ export default function IssuerPage() {
       return;
     }
 
-    if (authenticated) {
+    if (!zkloginAddress || !walletBoundAddress) {
       toast({
-        title: "Wallet already authenticated",
-        description: "You can bind this wallet to your account now.",
+        title: "Wallet bind required",
+        description: "Bind your wallet first before signature verification.",
+        variant: "warning",
+      });
+      return;
+    }
+
+    if (walletSignatureVerified) {
+      toast({
+        title: "Already verified",
+        description: "Wallet signature is already verified for this account.",
         variant: "info",
       });
       return;
     }
 
-    const ok = await authenticate();
-    if (ok) {
+    const timestamp = new Date().toISOString();
+    const message = [
+      "SUICERT Wallet Bind Verification",
+      `ZK Address: ${zkloginAddress}`,
+      `Wallet Address: ${walletBoundAddress}`,
+      `Timestamp: ${timestamp}`,
+    ].join("\n");
+
+    setVerifyingSignature(true);
+    try {
+      const signed = await signPersonalMessage({
+        message: new TextEncoder().encode(message),
+      });
+
+      const signature = (signed as { signature?: string; signatureSerialized?: string }).signatureSerialized
+        ?? (signed as { signature?: string }).signature;
+      if (!signature) throw new Error("Wallet returned an invalid signature payload.");
+
+      const verifyRes = await fetch("/api/auth/wallet/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          signature,
+          walletAddress: walletBoundAddress,
+          zkAddress: zkloginAddress,
+        }),
+      });
+
+      const verifyBody = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok) {
+        throw new Error(verifyBody?.error ?? "Wallet signature verification failed");
+      }
+
+      await refreshIdentity();
       toast({
-        title: "Wallet authenticated",
-        description: "Signature verified. You can now bind your wallet.",
+        title: "Wallet verified",
+        description: "Wallet signature has been verified and linked.",
         variant: "success",
       });
-      return;
+    } catch (err: unknown) {
+      toast({
+        title: "Signature verification failed",
+        description: err instanceof Error ? err.message : "Please try signing again.",
+        variant: "error",
+      });
+    } finally {
+      setVerifyingSignature(false);
     }
-
-    toast({
-      title: "Wallet authentication required",
-      description: "Please sign the wallet challenge to continue.",
-      variant: "warning",
-    });
   }
 
   async function submitOnChainProof() {
-    if (!authenticated) {
+    if (!walletSignatureVerified) {
       toast({
-        title: "Wallet authentication required",
-        description: "Authenticate your wallet first before submitting on-chain proof.",
+        title: "Wallet verification required",
+        description: "Verify wallet signature first before submitting on-chain proof.",
         variant: "warning",
       });
       return;
@@ -324,7 +395,7 @@ export default function IssuerPage() {
                       <p style={{ fontSize: 13, color: "var(--accent-dark)", marginBottom: 10, fontWeight: 600 }}>
                         ✅ Admin approved step 1. Submit your issuer-signed on-chain registration proof to complete final approval.
                       </p>
-                      {!authenticated && (
+                      {!walletSignatureVerified && (
                         <div style={{ marginBottom: 10, padding: "10px 12px", borderRadius: "var(--radius-sm)", border: "1px solid #fecdd3", background: "var(--coral-subtle)", color: "var(--coral)", fontSize: 12, fontWeight: 600 }}>
                           Wallet is not authenticated. Signature verification is required before this transaction can proceed.
                         </div>
@@ -332,21 +403,21 @@ export default function IssuerPage() {
                       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
                         <Input label="Registration Tx Digest" placeholder="Enter issuer-signed tx digest" value={proofTxDigest} onChange={(e) => setProofTxDigest(e.target.value)} />
                         <Input label="Issuer Cap / Object ID" placeholder="0x..." value={proofCapId} onChange={(e) => setProofCapId(e.target.value)} />
-                        {!authenticated && (
+                        {!walletSignatureVerified && (
                           <Button
                             variant="secondary"
                             size="sm"
-                            loading={authenticating}
+                            loading={verifyingSignature}
                             onClick={() => {
-                              void authenticate();
+                              void authenticateWallet();
                             }}
                             style={{ width: "fit-content" }}
                           >
-                            Authenticate Wallet
+                            Verify Wallet Signature
                           </Button>
                         )}
-                        <Button variant="sui" size="sm" loading={proofSubmitting} disabled={!authenticated || authenticating} onClick={submitOnChainProof} style={{ width: "fit-content" }}>
-                          {proofSubmitting ? "Submitting proof..." : !authenticated ? "Authenticate to Submit Proof" : "Submit On-Chain Proof"}
+                        <Button variant="sui" size="sm" loading={proofSubmitting} disabled={!walletSignatureVerified || verifyingSignature} onClick={submitOnChainProof} style={{ width: "fit-content" }}>
+                          {proofSubmitting ? "Submitting proof..." : !walletSignatureVerified ? "Verify Signature to Submit Proof" : "Submit On-Chain Proof"}
                         </Button>
                       </div>
                     </div>
@@ -430,17 +501,21 @@ export default function IssuerPage() {
                   walletBoundAddress={walletBoundAddress}
                   currentWalletAddress={currentWalletAddress}
                   connected={connected}
-                  authenticated={authenticated}
-                  authenticating={authenticating}
+                  authenticated={walletSignatureVerified}
+                  authenticating={verifyingSignature}
                   bindingWallet={bindingWallet}
                   walletBindMismatch={walletBindMismatch}
                   boundToCurrentWallet={boundToCurrentWallet}
                   signatureFresh={gates.l3SignatureFresh}
                   walletSessionAgeSeconds={walletSessionAgeSeconds}
                   walletActionMaxAgeSeconds={walletActionMaxAgeSeconds}
+                  registrationState={registration.state}
+                  registrationNextRoute={registration.nextRoute}
+                  registrationIssuerStatus={registration.issuerStatus}
                   onVerifyZklogin={() => { window.location.href = "/auth/zklogin?callbackUrl=/issuer"; }}
                   onAuthenticateWallet={authenticateWallet}
                   onBindWallet={bindWalletToAccount}
+                  onSkipWallet={skipWalletBinding}
                 />
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>

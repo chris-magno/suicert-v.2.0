@@ -231,6 +231,7 @@ export default function ConnectButton() {
                 setAuthOnConnectRequested(false);
                 setMenuOpen(false);
                 fetch("/api/wallet/session", { method: "DELETE" }).catch(() => {});
+                window.dispatchEvent(new CustomEvent("suicert:wallet-auth-cleared"));
               }}
               style={{
                 width: "100%", textAlign: "left", display: "flex",

@@ -238,6 +238,10 @@ npm run type-check   # TypeScript check only
 npm run test:webhook # Simulate Meet webhook: node scripts/test-webhook.js --event all
 ```
 
+SQL maintenance scripts:
+- scripts/supabase-reset-data.sql: data-only reset (keeps auth.users)
+- scripts/supabase-reset-non-admin.sql: full reset (also deletes auth.users)
+
 ---
 
 ## License

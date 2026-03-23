@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Award, Shield, ExternalLink, LogOut, ChevronRight } from "lucide-react";
+import { useSignPersonalMessage } from "@mysten/dapp-kit";
 import Navbar from "@/components/layout/Navbar";
 import { Card, Badge, Button } from "@/components/ui";
 import CertificateDisplay from "@/components/certificates/CertificateDisplay";
@@ -9,31 +10,36 @@ import type { Certificate, Issuer } from "@/types";
 import { useWalletSession } from "@/lib/wallet/context";
 import { sameSuiAddress } from "@/lib/wallet/address";
 import { useToast } from "@/components/ui/ToastProvider";
-import { signOut as clientSignOut } from "next-auth/react";
 import IdentityHierarchyPanel from "@/components/auth/IdentityHierarchyPanel";
 import { useIdentityStatus } from "@/lib/auth/use-identity-status";
+import { performFullLogout } from "@/lib/auth/client-logout";
 
 interface ProfileData {
   authenticated: boolean;
+  role?: "admin" | "issuer" | "user" | "guest";
   user?: { email: string; name: string; image?: string };
   issuer?: Issuer | null;
 }
 
 export default function ProfilePage() {
-  const { session, connected, authenticated, authenticating, authenticate } = useWalletSession();
+  const { session, connected } = useWalletSession();
+  const { mutateAsync: signPersonalMessage } = useSignPersonalMessage();
   const { toast } = useToast();
   const [profile, setProfile]   = useState<ProfileData | null>(null);
   const [certs, setCerts]       = useState<Certificate[]>([]);
   const [loading, setLoading]   = useState(true);
   const [tab, setTab]           = useState<"certs" | "issuer">("certs");
   const [bindingWallet, setBindingWallet] = useState(false);
+  const [verifyingSignature, setVerifyingSignature] = useState(false);
   const {
     loading: identityLoading,
     zkloginAddress,
     walletBoundAddress,
+    walletSignatureVerified,
     walletSessionAgeSeconds,
     walletActionMaxAgeSeconds,
     gates,
+    registration,
     refresh: refreshIdentity,
   } = useIdentityStatus();
 
@@ -61,7 +67,7 @@ export default function ProfilePage() {
   async function bindWalletToAccount() {
     setBindingWallet(true);
     try {
-      if (!connected) {
+      if (!connected || !currentWalletAddress) {
         toast({
           title: "Wallet connection required",
           description: "Connect your wallet from the navbar first.",
@@ -70,22 +76,17 @@ export default function ProfilePage() {
         return;
       }
 
-      if (!authenticated) {
-        toast({
-          title: "Wallet authentication required",
-          description: "Authenticate wallet first, then bind.",
-          variant: "warning",
-        });
-        return;
-      }
-
-      const res = await fetch("/api/auth/wallet/bind", { method: "POST" });
+      const res = await fetch("/api/auth/wallet/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ walletAddress: currentWalletAddress }),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? "Wallet bind failed");
       await refreshIdentity();
       toast({
         title: "Wallet bound",
-        description: "Wallet is now linked to your account.",
+        description: `Sui address linked: ${currentWalletAddress}`,
         variant: "success",
       });
     } catch (err: unknown) {
@@ -99,8 +100,36 @@ export default function ProfilePage() {
     }
   }
 
+  async function skipWalletBinding() {
+    setBindingWallet(true);
+    try {
+      const res = await fetch("/api/auth/wallet/bind", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? "Unable to skip wallet binding");
+
+      await refreshIdentity();
+      toast({
+        title: "Wallet skipped",
+        description: "You can bind a wallet later from profile settings.",
+        variant: "info",
+      });
+    } catch (err: unknown) {
+      toast({
+        title: "Unable to skip wallet",
+        description: err instanceof Error ? err.message : "Skip failed",
+        variant: "error",
+      });
+    } finally {
+      setBindingWallet(false);
+    }
+  }
+
   async function authenticateWallet() {
-    if (!connected) {
+    if (!connected || !currentWalletAddress) {
       toast({
         title: "Wallet connection required",
         description: "Connect your wallet from the navbar first.",
@@ -109,30 +138,73 @@ export default function ProfilePage() {
       return;
     }
 
-    if (authenticated) {
+    if (!zkloginAddress || !walletBoundAddress) {
       toast({
-        title: "Wallet already authenticated",
-        description: "You can bind this wallet to your account now.",
+        title: "Wallet bind required",
+        description: "Bind your wallet first before signature verification.",
+        variant: "warning",
+      });
+      return;
+    }
+
+    if (walletSignatureVerified) {
+      toast({
+        title: "Already verified",
+        description: "Wallet signature is already verified for this account.",
         variant: "info",
       });
       return;
     }
 
-    const ok = await authenticate();
-    if (ok) {
+    const timestamp = new Date().toISOString();
+    const message = [
+      "SUICERT Wallet Bind Verification",
+      `ZK Address: ${zkloginAddress}`,
+      `Wallet Address: ${walletBoundAddress}`,
+      `Timestamp: ${timestamp}`,
+    ].join("\n");
+
+    setVerifyingSignature(true);
+    try {
+      const signed = await signPersonalMessage({
+        message: new TextEncoder().encode(message),
+      });
+
+      const signature = (signed as { signature?: string; signatureSerialized?: string }).signatureSerialized
+        ?? (signed as { signature?: string }).signature;
+      if (!signature) throw new Error("Wallet returned an invalid signature payload.");
+
+      const verifyRes = await fetch("/api/auth/wallet/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          signature,
+          walletAddress: walletBoundAddress,
+          zkAddress: zkloginAddress,
+        }),
+      });
+
+      const verifyBody = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok) {
+        throw new Error(verifyBody?.error ?? "Wallet signature verification failed");
+      }
+
+      await refreshIdentity();
       toast({
-        title: "Wallet authenticated",
-        description: "Signature verified. You can now bind your wallet.",
+        title: "Wallet verified",
+        description: "Wallet signature has been verified and linked.",
         variant: "success",
       });
-      return;
+    } catch (err: unknown) {
+      toast({
+        title: "Signature verification failed",
+        description: err instanceof Error ? err.message : "Please try signing again.",
+        variant: "error",
+      });
+    } finally {
+      setVerifyingSignature(false);
     }
-
-    toast({
-      title: "Wallet authentication required",
-      description: "Please sign the wallet challenge to continue.",
-      variant: "warning",
-    });
   }
 
   if (loading) {
@@ -148,7 +220,10 @@ export default function ProfilePage() {
 
   if (!profile?.authenticated) return null; // Redirect handled above
 
-  const user = profile.user!;
+  const userName = profile.user?.name?.trim() || "User";
+  const userEmail = profile.user?.email?.trim() || "";
+  const userImage = profile.user?.image;
+  const userInitial = (userName.charAt(0) || userEmail.charAt(0) || "U").toUpperCase();
   const currentWalletAddress = session?.address ?? null;
   const walletBindMismatch = Boolean(
     connected && currentWalletAddress && walletBoundAddress && !sameSuiAddress(walletBoundAddress, currentWalletAddress)
@@ -170,21 +245,23 @@ export default function ProfilePage() {
 
         {/* Profile header */}
         <Card style={{ padding: "32px", marginBottom: 24, display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-          {user.image ? (
+          {userImage ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={user.image} alt={user.name} width={72} height={72} style={{ borderRadius: "50%", border: "3px solid var(--border)" }} />
+            <img src={userImage} alt={userName} width={72} height={72} style={{ borderRadius: "50%", border: "3px solid var(--border)" }} />
           ) : (
             <div style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, var(--sui-blue), var(--sui-teal))", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 28, color: "white" }}>
-              {user.name?.charAt(0) ?? user.email.charAt(0).toUpperCase()}
+              {userInitial}
             </div>
           )}
           <div style={{ flex: 1 }}>
-            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, marginBottom: 4 }}>{user.name}</h1>
-            <p style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 10 }}>{user.email}</p>
+            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, marginBottom: 4 }}>{userName}</h1>
+            <p style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 10 }}>{userEmail || "No email"}</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {profile.role === "admin" && <Badge variant="danger" dot>Admin</Badge>}
+              {profile.role === "issuer" && !profile.issuer && <Badge variant="info" dot>Issuer</Badge>}
               {profile.issuer?.status === "approved" && <Badge variant="success" dot>Verified Issuer</Badge>}
               {profile.issuer?.status === "pending"  && <Badge variant="warning" dot>Issuer Pending</Badge>}
-              {!profile.issuer && <Badge variant="default">User</Badge>}
+              {!profile.issuer && profile.role !== "admin" && <Badge variant="default">User</Badge>}
               <Badge variant="sui">Sui Testnet</Badge>
             </div>
           </div>
@@ -194,7 +271,7 @@ export default function ProfilePage() {
                 <Shield size={13} /> Become an Issuer
               </Link>
             )}
-            <a href="/" onClick={(e) => { e.preventDefault(); void clientSignOut({ callbackUrl: "/" }); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)", color: "var(--text-secondary)", border: "1.5px solid var(--border)", textDecoration: "none", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13 }}>
+            <a href="/" onClick={(e) => { e.preventDefault(); void performFullLogout("/"); }} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: "var(--radius-sm)", background: "var(--bg-subtle)", color: "var(--text-secondary)", border: "1.5px solid var(--border)", textDecoration: "none", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13 }}>
               <LogOut size={13} /> Sign out
             </a>
           </div>
@@ -232,17 +309,21 @@ export default function ProfilePage() {
           walletBoundAddress={walletBoundAddress}
           currentWalletAddress={currentWalletAddress}
           connected={connected}
-          authenticated={authenticated}
-          authenticating={authenticating}
+          authenticated={walletSignatureVerified}
+          authenticating={verifyingSignature}
           bindingWallet={bindingWallet}
           walletBindMismatch={walletBindMismatch}
           boundToCurrentWallet={boundToCurrentWallet}
           signatureFresh={gates.l3SignatureFresh}
           walletSessionAgeSeconds={walletSessionAgeSeconds}
           walletActionMaxAgeSeconds={walletActionMaxAgeSeconds}
+          registrationState={registration.state}
+          registrationNextRoute={registration.nextRoute}
+          registrationIssuerStatus={registration.issuerStatus}
           onVerifyZklogin={() => { window.location.href = "/auth/zklogin?callbackUrl=/profile"; }}
           onAuthenticateWallet={authenticateWallet}
           onBindWallet={bindWalletToAccount}
+          onSkipWallet={skipWalletBinding}
         />
 
         {/* Tabs */}

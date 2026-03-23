@@ -6,11 +6,27 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { getUserIdentityByUserId } from "@/lib/supabase";
 
+const RESOLVED_GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID?.trim()
+  || process.env.AUTH_GOOGLE_ID?.trim()
+  || process.env.NEXT_PUBLIC_ZKLOGIN_GOOGLE_CLIENT_ID?.trim()
+  || "";
+
+const RESOLVED_GOOGLE_CLIENT_SECRET =
+  process.env.GOOGLE_CLIENT_SECRET?.trim()
+  || process.env.AUTH_GOOGLE_SECRET?.trim()
+  || "";
+
+const RESOLVED_AUTH_SECRET =
+  process.env.NEXTAUTH_SECRET?.trim()
+  || process.env.AUTH_SECRET?.trim()
+  || "";
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
   providers: [
     Google({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: RESOLVED_GOOGLE_CLIENT_ID,
+      clientSecret: RESOLVED_GOOGLE_CLIENT_SECRET,
       authorization: {
         params: {
           scope: "openid email profile",
@@ -77,7 +93,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     signIn: "/auth/signin",
     error: "/auth/error",
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: RESOLVED_AUTH_SECRET,
 });
 
 // Admin emails — checked in middleware

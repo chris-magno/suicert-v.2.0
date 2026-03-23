@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getUserIdentityByUserId } from "@/lib/supabase";
-import { sameSuiAddress } from "@/lib/wallet/address";
-import { getVerifiedWalletSession } from "@/lib/wallet/server-auth";
+import { resolveCurrentStep } from "@/lib/auth/resolve-current-step";
 
 export interface SuiCertGateContext {
   userId: string;
@@ -29,12 +28,6 @@ export interface SuiCertGateFailure {
   response: NextResponse;
 }
 
-function toUnixMs(isoString: string | undefined): number {
-  if (!isoString) return Number.NaN;
-  const ts = new Date(isoString).getTime();
-  return Number.isFinite(ts) ? ts : Number.NaN;
-}
-
 function fail(status: number, code: string, error: string, details?: Record<string, unknown>): SuiCertGateFailure {
   return {
     ok: false,
@@ -43,7 +36,7 @@ function fail(status: number, code: string, error: string, details?: Record<stri
 }
 
 export async function requireSuiCertWriteGates(
-  req: NextRequest,
+  _req: NextRequest,
   options: SuiCertGateOptions = {}
 ): Promise<SuiCertGateResult | SuiCertGateFailure> {
   const requireFreshSignature = options.requireFreshSignature ?? true;
@@ -62,32 +55,23 @@ export async function requireSuiCertWriteGates(
     return fail(401, "ZKLOGIN_REQUIRED", "zkLogin identity verification is required.");
   }
 
-  const walletSession = await getVerifiedWalletSession(req);
-  if (!walletSession?.address) {
-    return fail(401, "WALLET_AUTH_REQUIRED", "Wallet authorization is required. Sign the wallet challenge first.");
+  const step = await resolveCurrentStep(user.id).catch(() => ({
+    step: "layer2_zklogin" as const,
+  }));
+
+  if (step.step === "layer2_zklogin") {
+    return fail(401, "ZKLOGIN_REQUIRED", "zkLogin proof is missing or expired. Complete Layer 2 first.");
   }
 
-  if (!sameSuiAddress(walletSession.address, identity.zkloginAddress)) {
-    return fail(403, "WALLET_ZKLOGIN_MISMATCH", "Connected wallet does not match your zkLogin identity.", {
-      zkloginAddress: identity.zkloginAddress,
-      walletAddress: walletSession.address,
-    });
+  if (step.step === "layer3_wallet_bind") {
+    return fail(401, "WALLET_BIND_REQUIRED", "Bind a wallet or explicitly skip wallet binding before continuing.");
   }
 
-  if (requireFreshSignature) {
-    const verifiedAtMs = toUnixMs(walletSession.verifiedAt);
-    if (!Number.isFinite(verifiedAtMs)) {
-      return fail(401, "SIGNATURE_MISSING_TIMESTAMP", "Wallet signature timestamp is missing. Please sign again.");
-    }
-
-    const ageSeconds = Math.floor((Date.now() - verifiedAtMs) / 1000);
-    if (ageSeconds > actionMaxAgeSeconds) {
-      return fail(401, "SIGNATURE_STALE", "Wallet signature is stale. Please re-authenticate your wallet before writing on-chain state.", {
-        ageSeconds,
-        maxAgeSeconds: actionMaxAgeSeconds,
-      });
-    }
+  if (requireFreshSignature && step.step === "layer4_signature_verify") {
+    return fail(401, "WALLET_SIGNATURE_REQUIRED", "Wallet signature verification is required before write actions.");
   }
+
+  const effectiveWalletAddress = identity.walletBoundAddress ?? identity.zkloginAddress;
 
   return {
     ok: true,
@@ -95,10 +79,10 @@ export async function requireSuiCertWriteGates(
       userId: user.id,
       userEmail: user.email,
       zkloginAddress: identity.zkloginAddress,
-      walletAddress: walletSession.address,
-      walletRole: walletSession.role,
-      walletVerifiedAt: walletSession.verifiedAt,
-      walletExpiresAt: walletSession.expiresAt,
+      walletAddress: effectiveWalletAddress,
+      walletRole: "user",
+      walletVerifiedAt: identity.walletVerifiedAt ?? identity.lastWalletVerifiedAt ?? new Date().toISOString(),
+      walletExpiresAt: new Date(Date.now() + actionMaxAgeSeconds * 1000).toISOString(),
     },
   };
 }

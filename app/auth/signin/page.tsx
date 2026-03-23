@@ -21,8 +21,17 @@ export default async function SignInPage({
 }) {
   const params = await searchParams;
   const callbackUrl = params.callbackUrl ?? "/dashboard";
-  const targetAfterZk = `/auth/zklogin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+  const targetAfterZk = `/auth/callback?callbackUrl=${encodeURIComponent(callbackUrl)}`;
   const errorMessage = params.error ? (ERROR_MESSAGES[params.error] ?? ERROR_MESSAGES.Default) : null;
+  const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.AUTH_GOOGLE_ID || process.env.NEXT_PUBLIC_ZKLOGIN_GOOGLE_CLIENT_ID;
+  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || process.env.AUTH_GOOGLE_SECRET;
+  const authSecret = process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET;
+  const authConfigured = Boolean(googleClientId && googleClientSecret && authSecret);
+  const missingConfig = [
+    !googleClientId ? "GOOGLE_CLIENT_ID (or AUTH_GOOGLE_ID)" : null,
+    !googleClientSecret ? "GOOGLE_CLIENT_SECRET (or AUTH_GOOGLE_SECRET)" : null,
+    !authSecret ? "NEXTAUTH_SECRET (or AUTH_SECRET)" : null,
+  ].filter(Boolean) as string[];
 
   return (
     <div style={{
@@ -60,11 +69,13 @@ export default async function SignInPage({
         <form
           action={async () => {
             "use server";
+            if (!authConfigured) return;
             await signIn("google", { redirectTo: targetAfterZk });
           }}
         >
           <button
             type="submit"
+            disabled={!authConfigured}
             style={{
               width: "100%", padding: "12px 20px",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
@@ -72,6 +83,7 @@ export default async function SignInPage({
               borderRadius: "var(--radius-sm)", cursor: "pointer",
               fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 15,
               color: "var(--text-primary)",
+              opacity: authConfigured ? 1 : 0.6,
             }}
           >
             <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
@@ -83,6 +95,13 @@ export default async function SignInPage({
             Continue with Google
           </button>
         </form>
+
+        {!authConfigured && (
+          <div style={{ marginTop: 14, border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 10, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
+            <p style={{ margin: 0, fontWeight: 700 }}>Google auth is not fully configured.</p>
+            <p style={{ margin: "4px 0 0" }}>Missing: {missingConfig.join(", ")}</p>
+          </div>
+        )}
 
         {errorMessage && (
           <div style={{ marginTop: 14, border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 10, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
@@ -99,10 +118,6 @@ export default async function SignInPage({
         </p>
 
         <div style={{ textAlign: "center", marginTop: 20 }}>
-          <Link href="/auth/zklogin" style={{ display: "inline-block", marginBottom: 10, fontSize: 13, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}>
-            Test zkLogin flow
-          </Link>
-          <br />
           <Link href="/" style={{ fontSize: 13, color: "var(--accent)", textDecoration: "none", fontWeight: 500 }}>
             ← Back to SUICERT
           </Link>

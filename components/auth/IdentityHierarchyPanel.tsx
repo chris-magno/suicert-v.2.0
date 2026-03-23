@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { ConnectModal, useWallets } from "@mysten/dapp-kit";
 import { Button, Card, Badge } from "@/components/ui";
 
 interface IdentityHierarchyPanelProps {
@@ -19,12 +21,20 @@ interface IdentityHierarchyPanelProps {
   signatureFresh: boolean;
   walletSessionAgeSeconds: number | null;
   walletActionMaxAgeSeconds: number;
+  registrationState: "new" | "returning";
+  registrationNextRoute: string;
+  registrationIssuerStatus: string | null;
   onVerifyZklogin: () => void;
   onAuthenticateWallet: () => void;
   onBindWallet: () => void;
+  onSkipWallet?: () => void;
 }
 
 export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProps) {
+  const [bindModalOpen, setBindModalOpen] = useState(false);
+  const wallets = useWallets();
+  const hasWalletProviders = wallets.length > 0;
+
   const {
     title,
     subtitle,
@@ -42,9 +52,13 @@ export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProp
     signatureFresh,
     walletSessionAgeSeconds,
     walletActionMaxAgeSeconds,
+    registrationState,
+    registrationNextRoute,
+    registrationIssuerStatus,
     onVerifyZklogin,
     onAuthenticateWallet,
     onBindWallet,
+    onSkipWallet,
   } = props;
 
   const l1 = Boolean(zkloginAddress);
@@ -82,7 +96,7 @@ export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProp
           {
             key: "L2",
             label: "L2 Authorization Gate",
-            description: "Connected wallet must match zkLogin identity",
+            description: "Bind a wallet address to your zkLogin identity (or skip)",
             status: loading
               ? "Checking..."
               : walletBindMismatch
@@ -95,14 +109,12 @@ export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProp
           {
             key: "L3",
             label: "L3 Action Gate",
-            description: "Fresh wallet signature required for writes",
+            description: "Verify ownership by signing canonical zk+wallet message",
             status: loading
               ? "Checking..."
               : l3
-                ? "Fresh signature"
-                : connected && authenticated
-                  ? "Stale signature"
-                  : "Required",
+                ? "Authorized"
+                : "Required",
             ok: l3,
           },
           {
@@ -113,38 +125,81 @@ export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProp
             ok: l4,
           },
         ].map((item) => (
-          <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg-card)" }}>
-            <div>
+          <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--bg-card)", flexWrap: "wrap" }}>
+            <div style={{ minWidth: 240, flex: 1 }}>
               <p style={{ fontSize: 13, color: "var(--text-secondary)", fontWeight: 700, margin: 0 }}>{item.label}</p>
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "3px 0 0" }}>{item.description}</p>
+              {!loading && item.key === "L1" && zkloginAddress && (
+                <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "6px 0 0", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+                  zkLogin: {zkloginAddress}
+                </p>
+              )}
+              {!loading && item.key === "L2" && currentWalletAddress && (
+                <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "6px 0 0", fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+                  Selected Sui wallet: {currentWalletAddress}
+                </p>
+              )}
             </div>
-            {item.status === "Checking..."
-              ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span>
-              : <Badge variant={item.ok ? "success" : "warning"} dot>{item.status}</Badge>}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {item.status === "Checking..."
+                ? <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking...</span>
+                : <Badge variant={item.ok ? "success" : "warning"} dot>{item.status}</Badge>}
+
+              {!loading && item.key === "L1" && !l1 && (
+                <Button variant="secondary" size="sm" onClick={onVerifyZklogin}>
+                  Connect zkLogin
+                </Button>
+              )}
+
+              {!loading && item.key === "L2" && !l2 && !connected && (
+                <ConnectModal
+                  open={bindModalOpen}
+                  onOpenChange={setBindModalOpen}
+                  trigger={
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setBindModalOpen(true);
+                      }}
+                    >
+                      Choose Wallet (Slush Popup)
+                    </Button>
+                  }
+                />
+              )}
+
+              {!loading && item.key === "L2" && !l2 && connected && (
+                <Button variant="secondary" size="sm" loading={bindingWallet} onClick={onBindWallet}>
+                  Bind Selected Sui Address
+                </Button>
+              )}
+
+              {!loading && item.key === "L2" && !l2 && onSkipWallet && (
+                <Button variant="ghost" size="sm" onClick={onSkipWallet}>
+                  Skip for now
+                </Button>
+              )}
+
+              {!loading && item.key === "L3" && !l3 && (
+                <Button variant="secondary" size="sm" loading={authenticating} onClick={onAuthenticateWallet}>
+                  Verify Signature
+                </Button>
+              )}
+            </div>
           </div>
         ))}
 
-        {!loading && !l1 && (
-          <Button variant="secondary" size="sm" onClick={onVerifyZklogin} style={{ width: "fit-content" }}>
-            Run zkLogin ({callbackUrl})
-          </Button>
-        )}
-
-        {!loading && l1 && !l2 && connected && !authenticated && (
-          <Button variant="secondary" size="sm" loading={authenticating} onClick={onAuthenticateWallet} style={{ width: "fit-content" }}>
-            Sign wallet challenge
-          </Button>
-        )}
-
-        {!loading && l1 && !l2 && connected && authenticated && (
-          <Button variant="secondary" size="sm" loading={bindingWallet} onClick={onBindWallet} style={{ width: "fit-content" }}>
-            Bind connected wallet
-          </Button>
-        )}
-
         {!loading && l1 && !l2 && !connected && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
-            Connect wallet from navbar, then sign and bind.
+            Wallet is required for authorization. Use "Connect Wallet" in L2 to choose a provider (for example Slush Wallet, Suiet, or Ethos).
+          </p>
+        )}
+
+        {!loading && l1 && !l2 && !connected && !hasWalletProviders && (
+          <p style={{ fontSize: 11, color: "#b45309", margin: 0 }}>
+            No Sui wallet provider detected. Install Slush Wallet, Suiet, or Ethos, then click Bind Wallet again.
           </p>
         )}
 
@@ -176,6 +231,36 @@ export default function IdentityHierarchyPanel(props: IdentityHierarchyPanelProp
           <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
             Signature age: {walletSessionAgeSeconds}s / {walletActionMaxAgeSeconds}s window.
           </p>
+        )}
+
+        {!loading && l3 && (
+          <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "10px 12px", background: "var(--bg-subtle)" }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)", margin: 0 }}>
+              Registration Guard
+            </p>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "4px 0 10px" }}>
+              {registrationState === "new"
+                ? "New user detected: create on-chain/app profile before issuer actions."
+                : "Returning user detected: resume with existing profile and status."}
+            </p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <Badge variant={registrationState === "new" ? "warning" : "success"} dot>
+                {registrationState === "new" ? "New user -> Register" : "Returning -> Resume"}
+              </Badge>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => { window.location.href = registrationNextRoute; }}
+              >
+                {registrationState === "new" ? "Continue to Registration" : "Resume Profile"}
+              </Button>
+            </div>
+            {registrationIssuerStatus && (
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "8px 0 0" }}>
+                Current issuer status: {registrationIssuerStatus}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </Card>

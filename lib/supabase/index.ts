@@ -66,6 +66,28 @@ export async function getUserIdentityByZkloginAddress(zkloginAddress: string): P
   return data ? mapUserIdentity(data) : null;
 }
 
+export async function getUserIdentityByWalletBoundAddress(walletBoundAddress: string): Promise<UserIdentity | null> {
+  const variants = getSuiAddressVariants(walletBoundAddress);
+  const candidates = variants.length > 0
+    ? variants.map((value) => value.trim().toLowerCase())
+    : [walletBoundAddress.trim().toLowerCase()];
+
+  if (candidates.length === 0 || !candidates[0]) return null;
+
+  const uniqueCandidates = Array.from(new Set(candidates));
+  const filter = uniqueCandidates.map((value) => `wallet_bound_address.eq.${value}`).join(",");
+
+  const { data, error } = await getSupabaseAdmin()
+    .from("user_identities")
+    .select("*")
+    .or(filter)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data ? mapUserIdentity(data) : null;
+}
+
 export async function clearUserIdentityZkloginAddress(userId: string): Promise<void> {
   const { error } = await getSupabaseAdmin()
     .from("user_identities")
@@ -79,16 +101,51 @@ export async function upsertUserIdentity(identity: {
   userId: string;
   authProvider?: "google" | "zklogin";
   zkloginAddress?: string;
+  zkMaxEpoch?: number;
   walletBoundAddress?: string;
+  walletBoundZkAddress?: string;
+  walletBoundAt?: string;
+  walletSignatureVerified?: boolean;
+  walletSignature?: string;
+  walletVerifiedAt?: string;
+  walletBindingSkippedAt?: string;
   lastWalletVerifiedAt?: string;
 }): Promise<UserIdentity> {
-  const payload = {
+  const payload: Record<string, unknown> = {
     user_id: identity.userId,
     auth_provider: identity.authProvider ?? "google",
-    zklogin_address: normalizeWalletAddress(identity.zkloginAddress),
-    wallet_bound_address: normalizeWalletAddress(identity.walletBoundAddress),
-    last_wallet_verified_at: identity.lastWalletVerifiedAt,
   };
+
+  if ("zkloginAddress" in identity) {
+    payload.zklogin_address = normalizeWalletAddress(identity.zkloginAddress);
+  }
+  if ("zkMaxEpoch" in identity) {
+    payload.zk_max_epoch = typeof identity.zkMaxEpoch === "number" ? identity.zkMaxEpoch : null;
+  }
+  if ("walletBoundAddress" in identity) {
+    payload.wallet_bound_address = normalizeWalletAddress(identity.walletBoundAddress);
+  }
+  if ("walletBoundZkAddress" in identity) {
+    payload.wallet_bound_zk_address = normalizeWalletAddress(identity.walletBoundZkAddress);
+  }
+  if ("walletBoundAt" in identity) {
+    payload.wallet_bound_at = identity.walletBoundAt;
+  }
+  if ("walletSignatureVerified" in identity) {
+    payload.wallet_signature_verified = identity.walletSignatureVerified;
+  }
+  if ("walletSignature" in identity) {
+    payload.wallet_signature = identity.walletSignature;
+  }
+  if ("walletVerifiedAt" in identity) {
+    payload.wallet_verified_at = identity.walletVerifiedAt;
+  }
+  if ("walletBindingSkippedAt" in identity) {
+    payload.wallet_binding_skipped_at = identity.walletBindingSkippedAt;
+  }
+  if ("lastWalletVerifiedAt" in identity) {
+    payload.last_wallet_verified_at = identity.lastWalletVerifiedAt;
+  }
 
   const { data, error } = await getSupabaseAdmin()
     .from("user_identities")
@@ -111,7 +168,12 @@ export async function bindWalletToUserIdentity(params: {
     userId: params.userId,
     authProvider: existing?.authProvider ?? "google",
     zkloginAddress: existing?.zkloginAddress,
+    zkMaxEpoch: existing?.zkMaxEpoch,
     walletBoundAddress: params.walletAddress,
+    walletBoundZkAddress: existing?.zkloginAddress,
+    walletBoundAt: params.verifiedAt ?? new Date().toISOString(),
+    walletSignatureVerified: false,
+    walletBindingSkippedAt: undefined,
     lastWalletVerifiedAt: params.verifiedAt ?? new Date().toISOString(),
   });
 }
@@ -463,7 +525,16 @@ function mapUserIdentity(d: Record<string, unknown>): UserIdentity {
     userId: d.user_id as string,
     authProvider: ((d.auth_provider as "google" | "zklogin" | undefined) ?? "google"),
     zkloginAddress: (d.zklogin_address as string | undefined),
+    zkMaxEpoch: typeof d.zk_max_epoch === "number" ? d.zk_max_epoch as number : undefined,
     walletBoundAddress: (d.wallet_bound_address as string | undefined),
+    walletBoundZkAddress: (d.wallet_bound_zk_address as string | undefined),
+    walletBoundAt: (d.wallet_bound_at as string | undefined),
+    walletSignatureVerified: typeof d.wallet_signature_verified === "boolean"
+      ? d.wallet_signature_verified as boolean
+      : undefined,
+    walletSignature: (d.wallet_signature as string | undefined),
+    walletVerifiedAt: (d.wallet_verified_at as string | undefined),
+    walletBindingSkippedAt: (d.wallet_binding_skipped_at as string | undefined),
     lastWalletVerifiedAt: (d.last_wallet_verified_at as string | undefined),
     createdAt: d.created_at as string,
     updatedAt: d.updated_at as string,
